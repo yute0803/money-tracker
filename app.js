@@ -105,7 +105,7 @@ $('#add-save').addEventListener('click', () => {
   if (!amount || amount <= 0) { toast('請輸入有效金額'); return; }
   if (!$('#add-date').value) { toast('請選擇日期'); return; }
   if (!addCategory) { toast('請先在設定頁新增分類'); return; }
-  entries.push({
+  addEntryData({
     id: uid(),
     date: $('#add-date').value,
     type: addType,
@@ -113,7 +113,6 @@ $('#add-save').addEventListener('click', () => {
     amount,
     note: $('#add-note').value.trim(),
   });
-  saveEntries();
   $('#add-amount').value = '';
   $('#add-note').value = '';
   toast(`已記一筆${addType === 'expense' ? '支出' : '收入'} NT$ ${fmt(amount)}`);
@@ -216,8 +215,7 @@ function openEdit(id) {
 $('#edit-cancel').addEventListener('click', () => $('#edit-overlay').classList.add('hidden'));
 $('#edit-delete').addEventListener('click', () => {
   if (!confirm('確定要刪除這筆紀錄嗎?')) return;
-  entries = entries.filter((x) => x.id !== editId);
-  saveEntries();
+  removeEntryData(editId);
   $('#edit-overlay').classList.add('hidden');
   renderList();
   toast('已刪除');
@@ -233,7 +231,7 @@ $('#edit-save').addEventListener('click', () => {
   e.type = editType;
   e.category = $('#edit-category').value;
   e.note = $('#edit-note').value.trim();
-  saveEntries();
+  updateEntryData(e);
   $('#edit-overlay').classList.add('hidden');
   renderList();
   toast('已更新');
@@ -345,7 +343,25 @@ let catManageType = 'expense';
 setupTypeToggle('cat-type-toggle', (t) => { catManageType = t; renderSettings(); });
 
 function renderSettings() {
-  $('#data-count').textContent = `目前共 ${entries.length} 筆紀錄,資料保存在此裝置的瀏覽器中,建議定期匯出備份。`;
+  // 帳號狀態
+  const acc = $('#account-status');
+  const loginBtn = $('#btn-login');
+  const logoutBtn = $('#btn-logout');
+  if (typeof cloudEnabled === 'undefined' || !cloudEnabled) {
+    acc.textContent = '雲端同步尚未設定,資料只保存在此裝置。';
+    loginBtn.classList.add('hidden');
+    logoutBtn.classList.add('hidden');
+  } else if (cloudUser) {
+    acc.textContent = `已登入:${cloudUser.email}。資料會自動同步到雲端,離線記帳也會在連線後補同步。`;
+    loginBtn.classList.add('hidden');
+    logoutBtn.classList.remove('hidden');
+  } else {
+    acc.textContent = '未登入:資料只保存在此裝置。使用 Google 登入後,資料會同步到你的帳號,換裝置也能接續使用。';
+    loginBtn.classList.remove('hidden');
+    logoutBtn.classList.add('hidden');
+  }
+  const store = (typeof cloudUser !== 'undefined' && cloudUser) ? '已同步至雲端' : '保存在此裝置的瀏覽器中';
+  $('#data-count').textContent = `目前共 ${entries.length} 筆紀錄,${store},建議定期匯出備份。`;
   const box = $('#cat-manage');
   box.innerHTML = '';
   categories[catManageType].forEach((c) => {
@@ -356,7 +372,7 @@ function renderSettings() {
       const used = entries.some((e) => e.type === catManageType && e.category === c);
       if (used && !confirm(`「${c}」已有紀錄在使用,刪除分類不會刪除紀錄,確定移除嗎?`)) return;
       categories[catManageType] = categories[catManageType].filter((x) => x !== c);
-      saveCats();
+      persistCats();
       renderSettings();
       renderAddCats();
     });
@@ -369,16 +385,16 @@ $('#cat-add-btn').addEventListener('click', () => {
   if (!name) return;
   if (categories[catManageType].includes(name)) { toast('分類已存在'); return; }
   categories[catManageType].push(name);
-  saveCats();
+  persistCats();
   $('#cat-new-name').value = '';
   renderSettings();
   renderAddCats();
 });
 
-$('#btn-clear').addEventListener('click', () => {
-  if (!confirm(`確定要清除全部 ${entries.length} 筆紀錄嗎?此動作無法復原,建議先匯出備份。`)) return;
-  entries = [];
-  saveEntries();
+$('#btn-clear').addEventListener('click', async () => {
+  const scope = cloudUser ? '(含雲端資料)' : '';
+  if (!confirm(`確定要清除全部 ${entries.length} 筆紀錄嗎${scope}?此動作無法復原,建議先匯出備份。`)) return;
+  await clearAllEntries();
   renderSettings();
   toast('已清除全部資料');
 });
@@ -718,21 +734,165 @@ function renderImportPreview() {
 }
 
 $('#import-cancel').addEventListener('click', () => $('#import-overlay').classList.add('hidden'));
-$('#import-confirm').addEventListener('click', () => {
+$('#import-confirm').addEventListener('click', async () => {
   const rows = collectImportRows().filter((r) => r.valid);
   if (!rows.length) { toast('沒有可匯入的資料'); return; }
-  if ($('#import-replace').checked) entries = [];
-  rows.forEach((r) => {
-    entries.push({ id: uid(), date: r.date, type: r.type, category: r.category, amount: r.amount, note: r.note });
-    if (!categories[r.type].includes(r.category)) categories[r.type].push(r.category);
+  const btn = $('#import-confirm');
+  btn.disabled = true;
+  btn.textContent = cloudUser ? '匯入並同步中…' : '匯入中…';
+  try {
+    const newEntries = rows.map((r) => ({ id: uid(), date: r.date, type: r.type, category: r.category, amount: r.amount, note: r.note }));
+    rows.forEach((r) => {
+      if (!categories[r.type].includes(r.category)) categories[r.type].push(r.category);
+    });
+    await bulkAddEntries(newEntries, $('#import-replace').checked);
+    persistCats();
+    renderAddCats();
+    renderSettings();
+    $('#import-overlay').classList.add('hidden');
+    $('#import-replace').checked = false;
+    toast(`成功匯入 ${rows.length} 筆紀錄`);
+  } catch (err) {
+    console.error(err);
+    toast('匯入失敗:' + (err.code || err.message));
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+/* ================= 雲端同步 (Firebase) ================= */
+const cloudEnabled = !!window.FIREBASE_CONFIG && typeof firebase !== 'undefined';
+let fbAuth = null, fbDb = null, cloudUser = null;
+let unsubEntries = null, unsubCats = null;
+
+if (cloudEnabled) {
+  firebase.initializeApp(window.FIREBASE_CONFIG);
+  fbAuth = firebase.auth();
+  fbDb = firebase.firestore();
+  fbDb.enablePersistence({ synchronizeTabs: true }).catch(() => {});
+  fbAuth.getRedirectResult().catch((e) => {
+    if (e.code !== 'auth/no-auth-event') toast('登入失敗:' + (e.code || e.message));
   });
+  fbAuth.onAuthStateChanged((u) => {
+    cloudUser = u;
+    if (u) startSync(u).catch((e) => { console.error(e); toast('同步啟動失敗:' + (e.code || e.message)); });
+    else stopSync();
+    renderSettings();
+  });
+}
+
+function entriesCol() { return fbDb.collection('users').doc(cloudUser.uid).collection('entries'); }
+function metaDoc() { return fbDb.collection('users').doc(cloudUser.uid).collection('meta').doc('config'); }
+
+async function startSync(u) {
+  // 本機既有資料屬於這個帳號(或從未登入過)才併入雲端,避免混到別人的帳號
+  const lastUid = localStorage.getItem('mt.lastUid');
+  localStorage.setItem('mt.lastUid', u.uid);
+  if (entries.length && (!lastUid || lastUid === u.uid)) {
+    const snap = await entriesCol().get();
+    const cloudIds = new Set(snap.docs.map((d) => d.id));
+    const missing = entries.filter((e) => !cloudIds.has(e.id));
+    if (missing.length) {
+      toast(`正在把本機 ${missing.length} 筆資料同步到雲端…`);
+      await uploadEntries(missing);
+    }
+    const catSnap = await metaDoc().get();
+    if (!catSnap.exists) await metaDoc().set({ categories });
+  }
+  unsubEntries = entriesCol().onSnapshot((snap) => {
+    entries = snap.docs.map((d) => d.data());
+    saveEntries();
+    refreshUI();
+  }, (err) => { console.error(err); toast('同步發生錯誤,請稍後再試'); });
+  unsubCats = metaDoc().onSnapshot((d) => {
+    const data = d.data();
+    if (data && data.categories) { categories = data.categories; saveCats(); renderAddCats(); }
+  });
+}
+
+function stopSync() {
+  if (unsubEntries) { unsubEntries(); unsubEntries = null; }
+  if (unsubCats) { unsubCats(); unsubCats = null; }
+}
+
+async function uploadEntries(list) {
+  for (let i = 0; i < list.length; i += 450) {
+    const batch = fbDb.batch();
+    list.slice(i, i + 450).forEach((e) => batch.set(entriesCol().doc(e.id), e));
+    await batch.commit();
+  }
+}
+
+/* ---- 資料寫入(登入時同步寫雲端) ---- */
+function addEntryData(e) {
+  entries.push(e);
+  saveEntries();
+  if (cloudUser) entriesCol().doc(e.id).set(e).catch(console.error);
+}
+function updateEntryData(e) {
+  saveEntries();
+  if (cloudUser) entriesCol().doc(e.id).set(e).catch(console.error);
+}
+function removeEntryData(id) {
+  entries = entries.filter((x) => x.id !== id);
+  saveEntries();
+  if (cloudUser) entriesCol().doc(id).delete().catch(console.error);
+}
+async function bulkAddEntries(list, replace) {
+  if (replace) await clearAllEntries();
+  entries = entries.concat(list);
+  saveEntries();
+  if (cloudUser) await uploadEntries(list);
+}
+async function clearAllEntries() {
+  const old = entries;
+  entries = [];
+  saveEntries();
+  if (cloudUser) {
+    for (let i = 0; i < old.length; i += 450) {
+      const batch = fbDb.batch();
+      old.slice(i, i + 450).forEach((e) => batch.delete(entriesCol().doc(e.id)));
+      await batch.commit();
+    }
+  }
+}
+function persistCats() {
+  saveCats();
+  if (cloudUser) metaDoc().set({ categories }, { merge: true }).catch(console.error);
+}
+
+function refreshUI() {
+  renderAddCats();
+  const active = document.querySelector('.page.active').id;
+  if (active === 'page-list') renderList();
+  else if (active === 'page-stats') renderStats();
+  else if (active === 'page-settings') renderSettings();
+}
+
+/* ---- 登入 / 登出 ---- */
+$('#btn-login').addEventListener('click', async () => {
+  const provider = new firebase.auth.GoogleAuthProvider();
+  const standalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
+  try {
+    if (standalone) await fbAuth.signInWithRedirect(provider);
+    else await fbAuth.signInWithPopup(provider);
+  } catch (err) {
+    if (err.code === 'auth/popup-closed-by-user' || err.code === 'auth/cancelled-popup-request') return;
+    try { await fbAuth.signInWithRedirect(provider); }
+    catch (e2) { toast('登入失敗:' + (e2.code || e2.message)); }
+  }
+});
+$('#btn-logout').addEventListener('click', async () => {
+  if (!confirm('確定要登出嗎?登出後這台裝置上的資料會清空(雲端資料不受影響,重新登入即可取回)。')) return;
+  stopSync();
+  await fbAuth.signOut();
+  entries = [];
+  categories = JSON.parse(JSON.stringify(DEFAULT_CATS));
   saveEntries();
   saveCats();
-  renderAddCats();
-  renderSettings();
-  $('#import-overlay').classList.add('hidden');
-  $('#import-replace').checked = false;
-  toast(`成功匯入 ${rows.length} 筆紀錄`);
+  localStorage.removeItem('mt.lastUid');
+  refreshUI();
+  toast('已登出');
 });
 
 /* ================= Service Worker ================= */

@@ -1,11 +1,15 @@
-const CACHE = 'money-tracker-v3';
+const CACHE = 'money-tracker-v4';
 const ASSETS = [
   './',
   './index.html',
   './style.css',
   './app.js',
+  './firebase-config.js',
   './manifest.json',
   './vendor/xlsx.full.min.js',
+  './vendor/firebase-app-compat.js',
+  './vendor/firebase-auth-compat.js',
+  './vendor/firebase-firestore-compat.js',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/apple-touch-icon.png',

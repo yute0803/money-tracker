@@ -81,6 +81,13 @@
 
   <!-- ===== 設定頁 ===== -->
   <section id="page-settings" class="page">
+    <h2 class="section-title">帳號與雲端同步</h2>
+    <div class="settings-group">
+      <div class="settings-info" id="account-status">尚未設定雲端功能。</div>
+      <button id="btn-login" class="settings-btn hidden">🔐 使用 Google 帳號登入</button>
+      <button id="btn-logout" class="settings-btn hidden">登出</button>
+    </div>
+
     <h2 class="section-title">Excel / CSV</h2>
     <div class="settings-group">
       <button id="btn-import" class="settings-btn">📥 匯入 Excel / CSV</button>
@@ -199,6 +206,10 @@
 <div id="toast" class="toast hidden"></div>
 
 <script src="vendor/xlsx.full.min.js"></script>
+<script src="vendor/firebase-app-compat.js"></script>
+<script src="vendor/firebase-auth-compat.js"></script>
+<script src="vendor/firebase-firestore-compat.js"></script>
+<script src="firebase-config.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
