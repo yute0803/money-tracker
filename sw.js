@@ -1,4 +1,4 @@
-const CACHE = 'money-tracker-v1';
+const CACHE = 'money-tracker-v3';
 const ASSETS = [
   './',
   './index.html',
@@ -26,11 +26,29 @@ self.addEventListener('activate', (e) => {
 
 self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET') return;
+  const url = new URL(e.request.url);
+  if (url.origin !== location.origin) return;
+
+  // 大型且不常變動的資源:快取優先
+  if (url.pathname.includes('/vendor/') || url.pathname.includes('/icons/')) {
+    e.respondWith(
+      caches.match(e.request).then((hit) => hit || fetch(e.request).then((res) => {
+        const copy = res.clone();
+        caches.open(CACHE).then((c) => c.put(e.request, copy));
+        return res;
+      }))
+    );
+    return;
+  }
+
+  // App 本體:網路優先,離線時退回快取,確保更新能立即生效
   e.respondWith(
-    caches.match(e.request).then((hit) => hit || fetch(e.request).then((res) => {
+    fetch(e.request).then((res) => {
       const copy = res.clone();
       caches.open(CACHE).then((c) => c.put(e.request, copy));
       return res;
-    }))
+    }).catch(() =>
+      caches.match(e.request).then((hit) => hit || caches.match('./index.html'))
+    )
   );
 });

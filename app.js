@@ -445,11 +445,13 @@ $('#import-file').addEventListener('change', async (ev) => {
 
 $('#import-sheet').addEventListener('change', (e) => loadSheet(e.target.value));
 
+function sheetGrid(name) {
+  return XLSX.utils.sheet_to_json(importWb.Sheets[name], { header: 1, defval: '' })
+    .filter((row) => row.some((c) => String(c).trim() !== ''));
+}
+
 function loadSheet(name) {
-  const ws = importWb.Sheets[name];
-  importGrid = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-  // 去掉全空列
-  importGrid = importGrid.filter((row) => row.some((c) => String(c).trim() !== ''));
+  importGrid = sheetGrid(name);
   buildMappingUI();
 }
 
@@ -469,34 +471,107 @@ function guessCol(headers, keys) {
   return -1;
 }
 
+/** 在前 8 列中找同時含「日期」與「金額」的標題列 */
+function findHeaderRow(grid) {
+  for (let i = 0; i < Math.min(8, grid.length); i++) {
+    const cells = grid[i].map((c) => String(c));
+    if (cells.some((c) => c.includes('日期')) && cells.some((c) => c.includes('金額'))) return i;
+  }
+  return 0;
+}
+
+/** 偵測「收入/支出分列」格式:收入欄與支出欄後面各跟一個金額欄 */
+function detectDual(headers) {
+  const iInc = headers.findIndex((c) => String(c).includes('收入'));
+  const iExp = headers.findIndex((c) => String(c).includes('支出'));
+  if (iInc !== -1 && iExp !== -1 &&
+      String(headers[iInc + 1] || '').includes('金額') &&
+      String(headers[iExp + 1] || '').includes('金額')) {
+    return { iInc, iExp };
+  }
+  return null;
+}
+
+// 結轉/統計列,不是真實收支
+const SKIP_NAMES = /累計|餘額|合計|小計|結餘|上月|月份$/;
+
+// 名稱 → 分類的推斷規則(名稱會保留在備註)
+const CAT_RULES = [
+  [/早餐/, '早餐'], [/中餐|午餐/, '中餐'], [/晚餐/, '晚餐'],
+  [/宵夜|點心|飲料|手搖|咖啡|甜點|冰|零食|麵包/, '餐飲'],
+  [/加油|油錢/, '加油'], [/計程車|uber|taxi/i, '計程車'],
+  [/公車|捷運|火車|高鐵|客運|停車|過路|機車|汽車|輪胎|保養/, '交通'],
+  [/衣|褲|鞋|襪|帽/, '衣服'], [/醫|藥|診所|牙|眼科/, '醫療'],
+  [/股|證券|基金|債/, '投資'],
+  [/房租|租金|水費|電費|瓦斯|網路|電信|電話費|管理費/, '居住'],
+  [/電影|遊|ktv|唱歌|門票|球|泳/i, '娛樂'],
+];
+const INC_RULES = [
+  [/薪|加班/, '薪水'], [/獎金|年終|紅包/, '獎金'], [/股利|配息|利息|股息|^a\d/, '投資'],
+];
+function guessCategory(name, isIncome) {
+  for (const [re, cat] of (isIncome ? INC_RULES : CAT_RULES)) if (re.test(name)) return cat;
+  return '其他';
+}
+
+function fillColSelect(sel, headers, optional) {
+  sel.innerHTML = '';
+  if (optional) {
+    const o = document.createElement('option');
+    o.value = '-1'; o.textContent = '(不使用)';
+    sel.appendChild(o);
+  }
+  headers.forEach((h, i) => {
+    const o = document.createElement('option');
+    o.value = String(i);
+    o.textContent = `${colName(i)}: ${String(h).slice(0, 14) || '(空白)'}`;
+    sel.appendChild(o);
+  });
+}
+
+function setFormatVisibility() {
+  const dual = $('#map-format').value === 'dual';
+  document.querySelectorAll('.single-only').forEach((el) => el.classList.toggle('hidden', dual));
+  document.querySelectorAll('.dual-only').forEach((el) => el.classList.toggle('hidden', !dual));
+}
+
 function buildMappingUI() {
-  const headers = importGrid[0] || [];
+  const headerRow = findHeaderRow(importGrid);
+  const headers = importGrid[headerRow] || [];
+  const dual = detectDual(headers);
+  $('#map-format').value = dual ? 'dual' : 'single';
+
   const fields = [
-    ['map-date', 'date', true],
-    ['map-amount', 'amount', true],
-    ['map-type', 'type', false],
-    ['map-category', 'category', false],
-    ['map-note', 'note', false],
+    ['map-date', false], ['map-amount', false], ['map-type', true],
+    ['map-category', true], ['map-note', true],
+    ['map-inc-name', true], ['map-inc-amt', false],
+    ['map-exp-name', true], ['map-exp-amt', false],
   ];
-  fields.forEach(([selId, key, required]) => {
+  fields.forEach(([selId, optional]) => {
     const sel = document.getElementById(selId);
-    sel.innerHTML = '';
-    if (!required) {
-      const o = document.createElement('option');
-      o.value = '-1'; o.textContent = '(不使用)';
-      sel.appendChild(o);
-    }
-    headers.forEach((h, i) => {
-      const o = document.createElement('option');
-      o.value = String(i);
-      o.textContent = `${colName(i)}: ${String(h).slice(0, 14) || '(空白)'}`;
-      sel.appendChild(o);
-    });
-    const g = guessCol(headers, GUESS[key]);
-    sel.value = String(g !== -1 ? g : (required ? 0 : -1));
+    fillColSelect(sel, headers, optional);
     sel.onchange = renderImportPreview;
   });
-  $('#map-fallback').onchange = renderImportPreview;
+
+  const g = (key) => guessCol(headers, GUESS[key]);
+  const pick = (selId, idx, fallback) => { $('#' + selId).value = String(idx !== -1 ? idx : fallback); };
+  pick('map-date', g('date'), 0);
+  pick('map-amount', g('amount'), 0);
+  pick('map-type', g('type'), -1);
+  pick('map-category', g('category'), -1);
+  pick('map-note', g('note'), -1);
+  if (dual) {
+    pick('map-inc-name', dual.iInc, 0);
+    pick('map-inc-amt', dual.iInc + 1, 0);
+    pick('map-exp-name', dual.iExp, 0);
+    pick('map-exp-amt', dual.iExp + 1, 0);
+    $('#map-note').value = '-1'; // 雙欄格式的名稱會自動放進備註
+  }
+
+  $('#all-sheets-row').classList.toggle('hidden', importWb.SheetNames.length <= 1);
+  ['map-format', 'map-fallback'].forEach((id) => { document.getElementById(id).onchange = () => { setFormatVisibility(); renderImportPreview(); }; });
+  ['import-all-sheets', 'import-carry', 'import-fixfuture'].forEach((id) => { document.getElementById(id).onchange = renderImportPreview; });
+  setFormatVisibility();
   renderImportPreview();
 }
 
@@ -525,11 +600,16 @@ function parseDateVal(v) {
     let y = Number(m[1]);
     if (y < 200) y += 1911;           // 民國年
     else if (y < 100) y += 2000;
-    return `${y}-${String(m[2]).padStart(2, '0')}-${String(m[3]).padStart(2, '0')}`;
+    return validDate(y, Number(m[2]), Number(m[3]));
   }
   m = s.match(/^(\d{4})(\d{2})(\d{2})$/); // 20260705
-  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  if (m) return validDate(Number(m[1]), Number(m[2]), Number(m[3]));
   return null;
+}
+
+function validDate(y, mo, d) {
+  if (y < 1900 || y > 2100 || mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
 }
 
 function parseAmountVal(v) {
@@ -541,39 +621,86 @@ function parseAmountVal(v) {
 
 const INCOME_WORDS = ['收入', '收', '入帳', '入账', 'income', 'in', '+'];
 
-function mappedRows() {
+/** 依目前選項解析單一工作表的資料列 */
+function mappedRowsForGrid(grid) {
+  const dual = $('#map-format').value === 'dual';
+  const carry = $('#import-carry').checked;
+  const fixFuture = $('#import-fixfuture').checked;
+  const today = todayStr();
   const iDate = Number($('#map-date').value);
-  const iAmt = Number($('#map-amount').value);
-  const iType = Number($('#map-type').value);
-  const iCat = Number($('#map-category').value);
   const iNote = Number($('#map-note').value);
-  const fallback = $('#map-fallback').value;
+  const headerRow = findHeaderRow(grid);
 
   const out = [];
-  for (let r = 1; r < importGrid.length; r++) {
-    const row = importGrid[r];
-    const date = parseDateVal(row[iDate]);
-    let amount = parseAmountVal(row[iAmt]);
-    if (date === null && amount === null) continue; // 整列無效,略過
-    let type = null;
-    if (iType >= 0) {
-      const t = String(row[iType]).trim().toLowerCase();
-      if (t) type = INCOME_WORDS.some((w) => t.includes(w)) ? 'income' : 'expense';
+  let lastDate = null;
+  const resolveDate = (row) => {
+    let date = parseDateVal(row[iDate]);
+    if (date) lastDate = date;
+    else if (carry && lastDate) date = lastDate;
+    if (date && fixFuture && date > today) date = (Number(date.slice(0, 4)) - 1) + date.slice(4);
+    return date;
+  };
+
+  if (dual) {
+    const iIncN = Number($('#map-inc-name').value);
+    const iIncA = Number($('#map-inc-amt').value);
+    const iExpN = Number($('#map-exp-name').value);
+    const iExpA = Number($('#map-exp-amt').value);
+    for (let r = headerRow + 1; r < grid.length; r++) {
+      const row = grid[r];
+      const date = resolveDate(row);
+      if (!date) continue;
+      const extraNote = iNote >= 0 ? String(row[iNote]).trim() : '';
+      const pairs = [
+        ['income', iIncN >= 0 ? String(row[iIncN]).trim() : '', parseAmountVal(row[iIncA])],
+        ['expense', iExpN >= 0 ? String(row[iExpN]).trim() : '', parseAmountVal(row[iExpA])],
+      ];
+      for (const [type, name, amount] of pairs) {
+        if (!amount || amount <= 0 || SKIP_NAMES.test(name)) continue;
+        const note = [name, extraNote].filter(Boolean).join(' ');
+        out.push({ date, type, category: guessCategory(name, type === 'income'), amount, note, valid: true });
+      }
     }
-    if (type === null) {
-      if (fallback === 'sign') type = amount !== null && amount < 0 ? 'expense' : 'income';
-      else type = fallback;
+  } else {
+    const iAmt = Number($('#map-amount').value);
+    const iType = Number($('#map-type').value);
+    const iCat = Number($('#map-category').value);
+    const fallback = $('#map-fallback').value;
+    for (let r = headerRow + 1; r < grid.length; r++) {
+      const row = grid[r];
+      const date = resolveDate(row);
+      let amount = parseAmountVal(row[iAmt]);
+      if (date === null && amount === null) continue; // 整列無效,略過
+      let type = null;
+      if (iType >= 0) {
+        const t = String(row[iType]).trim().toLowerCase();
+        if (t) type = INCOME_WORDS.some((w) => t.includes(w)) ? 'income' : 'expense';
+      }
+      if (type === null) {
+        if (fallback === 'sign') type = amount !== null && amount < 0 ? 'expense' : 'income';
+        else type = fallback;
+      }
+      if (amount !== null) amount = Math.abs(amount);
+      const note = iNote >= 0 ? String(row[iNote]).trim() : '';
+      const category = iCat >= 0 && String(row[iCat]).trim()
+        ? String(row[iCat]).trim()
+        : (note ? guessCategory(note, type === 'income') : '其他');
+      out.push({ date, type, category, amount, note, valid: !!date && amount !== null && amount > 0 });
     }
-    if (amount !== null) amount = Math.abs(amount);
-    const category = iCat >= 0 && String(row[iCat]).trim() ? String(row[iCat]).trim() : '其他';
-    const note = iNote >= 0 ? String(row[iNote]).trim() : '';
-    out.push({ date, type, category, amount, note, valid: date !== null && amount !== null && amount > 0 });
   }
   return out;
 }
 
+/** 依「全部工作表」選項收集所有要匯入的列 */
+function collectImportRows() {
+  if ($('#import-all-sheets').checked) {
+    return importWb.SheetNames.flatMap((n) => mappedRowsForGrid(sheetGrid(n)));
+  }
+  return mappedRowsForGrid(importGrid);
+}
+
 function renderImportPreview() {
-  const rows = mappedRows();
+  const rows = collectImportRows();
   const ok = rows.filter((r) => r.valid).length;
   let html = '<table><tr><th>日期</th><th>類型</th><th>分類</th><th>金額</th><th>備註</th></tr>';
   rows.slice(0, 5).forEach((r) => {
@@ -592,7 +719,7 @@ function renderImportPreview() {
 
 $('#import-cancel').addEventListener('click', () => $('#import-overlay').classList.add('hidden'));
 $('#import-confirm').addEventListener('click', () => {
-  const rows = mappedRows().filter((r) => r.valid);
+  const rows = collectImportRows().filter((r) => r.valid);
   if (!rows.length) { toast('沒有可匯入的資料'); return; }
   if ($('#import-replace').checked) entries = [];
   rows.forEach((r) => {

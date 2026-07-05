@@ -159,18 +159,32 @@
       <label class="field-label">工作表</label>
       <select id="import-sheet" class="field-input"></select>
     </div>
+    <div class="import-row">
+      <label class="field-label">資料格式</label>
+      <select id="map-format" class="field-input">
+        <option value="single">單一金額欄(含類型或分類欄)</option>
+        <option value="dual">收入/支出分列(各自名稱+金額欄)</option>
+      </select>
+    </div>
     <div class="import-grid">
       <div><label class="field-label">日期欄 *</label><select id="map-date" class="field-input"></select></div>
-      <div><label class="field-label">金額欄 *</label><select id="map-amount" class="field-input"></select></div>
-      <div><label class="field-label">收/支類型欄</label><select id="map-type" class="field-input"></select></div>
-      <div><label class="field-label">分類欄</label><select id="map-category" class="field-input"></select></div>
-      <div><label class="field-label">備註欄</label><select id="map-note" class="field-input"></select></div>
-      <div><label class="field-label">沒有類型欄時</label><select id="map-fallback" class="field-input">
+      <div class="single-only"><label class="field-label">金額欄 *</label><select id="map-amount" class="field-input"></select></div>
+      <div class="single-only"><label class="field-label">收/支類型欄</label><select id="map-type" class="field-input"></select></div>
+      <div class="single-only"><label class="field-label">分類欄</label><select id="map-category" class="field-input"></select></div>
+      <div class="single-only"><label class="field-label">沒有類型欄時</label><select id="map-fallback" class="field-input">
         <option value="sign">金額正=收入,負=支出</option>
         <option value="expense">全部視為支出</option>
         <option value="income">全部視為收入</option>
       </select></div>
+      <div class="dual-only hidden"><label class="field-label">收入名稱欄</label><select id="map-inc-name" class="field-input"></select></div>
+      <div class="dual-only hidden"><label class="field-label">收入金額欄 *</label><select id="map-inc-amt" class="field-input"></select></div>
+      <div class="dual-only hidden"><label class="field-label">支出名稱欄</label><select id="map-exp-name" class="field-input"></select></div>
+      <div class="dual-only hidden"><label class="field-label">支出金額欄 *</label><select id="map-exp-amt" class="field-input"></select></div>
+      <div><label class="field-label">備註欄</label><select id="map-note" class="field-input"></select></div>
     </div>
+    <label class="check-row" id="all-sheets-row"><input id="import-all-sheets" type="checkbox"> 全部工作表一起匯入(每張表自動偵測標題列)</label>
+    <label class="check-row"><input id="import-carry" type="checkbox" checked> 沒日期的列沿用上一筆的日期</label>
+    <label class="check-row"><input id="import-fixfuture" type="checkbox" checked> 未來的日期自動減一年(修正 Excel 補錯年份)</label>
     <label class="check-row"><input id="import-replace" type="checkbox"> 匯入前先清空現有資料</label>
     <h3 class="field-label">預覽(前 5 筆)</h3>
     <div id="import-preview" class="import-preview"></div>
