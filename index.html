@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>記帳本</title>
+<meta name="description" content="個人財務收支記帳 App,支援 Excel 匯入匯出">
+<meta name="theme-color" content="#107a69">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="記帳本">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="app-header">
+  <h1 id="header-title">記帳</h1>
+</header>
+
+<main id="main">
+
+  <!-- ===== 記帳頁 ===== -->
+  <section id="page-add" class="page active">
+    <div class="type-toggle" id="add-type-toggle">
+      <button class="type-btn expense active" data-type="expense">支出</button>
+      <button class="type-btn income" data-type="income">收入</button>
+    </div>
+
+    <div class="amount-box">
+      <span class="currency">NT$</span>
+      <input id="add-amount" type="text" inputmode="decimal" placeholder="0" autocomplete="off">
+    </div>
+
+    <label class="field-label">日期</label>
+    <input id="add-date" type="date" class="field-input">
+
+    <label class="field-label">分類</label>
+    <div id="add-categories" class="category-grid"></div>
+
+    <label class="field-label">備註(選填)</label>
+    <input id="add-note" type="text" class="field-input" placeholder="例如:午餐、加油…" autocomplete="off">
+
+    <button id="add-save" class="primary-btn">儲存</button>
+  </section>
+
+  <!-- ===== 明細頁 ===== -->
+  <section id="page-list" class="page">
+    <div class="month-nav">
+      <button class="month-arrow" data-nav="-1">‹</button>
+      <span id="list-month-label" class="month-label"></span>
+      <button class="month-arrow" data-nav="1">›</button>
+    </div>
+    <div class="summary-row">
+      <div class="summary-cell"><div class="summary-title">收入</div><div id="list-income" class="summary-num income-text">0</div></div>
+      <div class="summary-cell"><div class="summary-title">支出</div><div id="list-expense" class="summary-num expense-text">0</div></div>
+      <div class="summary-cell"><div class="summary-title">結餘</div><div id="list-balance" class="summary-num">0</div></div>
+    </div>
+    <div id="entry-list"></div>
+  </section>
+
+  <!-- ===== 統計頁 ===== -->
+  <section id="page-stats" class="page">
+    <div class="month-nav">
+      <button class="month-arrow" data-nav="-1">‹</button>
+      <span id="stats-month-label" class="month-label"></span>
+      <button class="month-arrow" data-nav="1">›</button>
+    </div>
+    <div class="type-toggle small" id="stats-type-toggle">
+      <button class="type-btn expense active" data-type="expense">支出</button>
+      <button class="type-btn income" data-type="income">收入</button>
+    </div>
+    <div id="stats-donut" class="chart-box"></div>
+    <div id="stats-cats" class="cat-rank"></div>
+    <h2 class="section-title">近 6 個月趨勢</h2>
+    <div id="stats-trend" class="chart-box"></div>
+  </section>
+
+  <!-- ===== 設定頁 ===== -->
+  <section id="page-settings" class="page">
+    <h2 class="section-title">Excel / CSV</h2>
+    <div class="settings-group">
+      <button id="btn-import" class="settings-btn">📥 匯入 Excel / CSV</button>
+      <input id="import-file" type="file" accept=".xlsx,.xls,.csv" hidden>
+      <button id="btn-export-xlsx" class="settings-btn">📤 匯出成 Excel (.xlsx)</button>
+      <button id="btn-export-csv" class="settings-btn">📤 匯出成 CSV</button>
+    </div>
+
+    <h2 class="section-title">分類管理</h2>
+    <div class="settings-group">
+      <div class="type-toggle small" id="cat-type-toggle">
+        <button class="type-btn expense active" data-type="expense">支出</button>
+        <button class="type-btn income" data-type="income">收入</button>
+      </div>
+      <div id="cat-manage" class="cat-manage"></div>
+      <div class="cat-add-row">
+        <input id="cat-new-name" type="text" class="field-input" placeholder="新分類名稱" autocomplete="off">
+        <button id="cat-add-btn" class="secondary-btn">新增</button>
+      </div>
+    </div>
+
+    <h2 class="section-title">資料</h2>
+    <div class="settings-group">
+      <div class="settings-info" id="data-count"></div>
+      <button id="btn-clear" class="settings-btn danger">🗑️ 清除全部資料</button>
+    </div>
+
+    <h2 class="section-title">安裝到 iPhone 主畫面</h2>
+    <div class="settings-group">
+      <div class="settings-info install-help">
+        用 Safari 開啟本網頁 → 點下方「分享」按鈕 <span class="share-icon">⎋</span> → 選「加入主畫面」,之後就能像一般 App 一樣全螢幕使用,資料保存在你的手機上。
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<!-- 底部分頁列 -->
+<nav class="tab-bar">
+  <button class="tab active" data-page="add"><span class="tab-icon">✏️</span>記帳</button>
+  <button class="tab" data-page="list"><span class="tab-icon">📋</span>明細</button>
+  <button class="tab" data-page="stats"><span class="tab-icon">📊</span>統計</button>
+  <button class="tab" data-page="settings"><span class="tab-icon">⚙️</span>設定</button>
+</nav>
+
+<!-- 編輯既有紀錄的彈窗 -->
+<div id="edit-overlay" class="overlay hidden">
+  <div class="modal">
+    <h2 class="modal-title">編輯紀錄</h2>
+    <div class="type-toggle small" id="edit-type-toggle">
+      <button class="type-btn expense" data-type="expense">支出</button>
+      <button class="type-btn income" data-type="income">收入</button>
+    </div>
+    <label class="field-label">金額</label>
+    <input id="edit-amount" type="text" inputmode="decimal" class="field-input">
+    <label class="field-label">日期</label>
+    <input id="edit-date" type="date" class="field-input">
+    <label class="field-label">分類</label>
+    <select id="edit-category" class="field-input"></select>
+    <label class="field-label">備註</label>
+    <input id="edit-note" type="text" class="field-input">
+    <div class="modal-actions">
+      <button id="edit-delete" class="secondary-btn danger">刪除</button>
+      <div class="spacer"></div>
+      <button id="edit-cancel" class="secondary-btn">取消</button>
+      <button id="edit-save" class="primary-btn slim">儲存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 匯入欄位對應彈窗 -->
+<div id="import-overlay" class="overlay hidden">
+  <div class="modal wide">
+    <h2 class="modal-title">匯入設定</h2>
+    <div id="import-sheet-row" class="import-row hidden">
+      <label class="field-label">工作表</label>
+      <select id="import-sheet" class="field-input"></select>
+    </div>
+    <div class="import-grid">
+      <div><label class="field-label">日期欄 *</label><select id="map-date" class="field-input"></select></div>
+      <div><label class="field-label">金額欄 *</label><select id="map-amount" class="field-input"></select></div>
+      <div><label class="field-label">收/支類型欄</label><select id="map-type" class="field-input"></select></div>
+      <div><label class="field-label">分類欄</label><select id="map-category" class="field-input"></select></div>
+      <div><label class="field-label">備註欄</label><select id="map-note" class="field-input"></select></div>
+      <div><label class="field-label">沒有類型欄時</label><select id="map-fallback" class="field-input">
+        <option value="sign">金額正=收入,負=支出</option>
+        <option value="expense">全部視為支出</option>
+        <option value="income">全部視為收入</option>
+      </select></div>
+    </div>
+    <label class="check-row"><input id="import-replace" type="checkbox"> 匯入前先清空現有資料</label>
+    <h3 class="field-label">預覽(前 5 筆)</h3>
+    <div id="import-preview" class="import-preview"></div>
+    <div class="modal-actions">
+      <button id="import-cancel" class="secondary-btn">取消</button>
+      <div class="spacer"></div>
+      <button id="import-confirm" class="primary-btn slim">匯入</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="vendor/xlsx.full.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
