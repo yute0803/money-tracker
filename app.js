@@ -510,6 +510,8 @@ function detectDual(headers) {
 
 // 結轉/統計列,不是真實收支
 const SKIP_NAMES = /累計|餘額|合計|小計|結餘|上月|月份$/;
+const CLAIM_PENDING = '待請款';
+const CLAIM_PAID = '已還款';
 
 // 名稱 → 分類的推斷規則(名稱會保留在備註)
 const CAT_RULES = [
@@ -666,15 +668,37 @@ function mappedRowsForGrid(grid) {
       const row = grid[r];
       const date = resolveDate(row);
       if (!date) continue;
+      const incName = iIncN >= 0 ? String(row[iIncN]).trim() : '';
+      const incAmount = parseAmountVal(row[iIncA]);
+      const expName = iExpN >= 0 ? String(row[iExpN]).trim() : '';
+      const expAmount = parseAmountVal(row[iExpA]);
       const extraNote = iNote >= 0 ? String(row[iNote]).trim() : '';
-      const pairs = [
-        ['income', iIncN >= 0 ? String(row[iIncN]).trim() : '', parseAmountVal(row[iIncA])],
-        ['expense', iExpN >= 0 ? String(row[iExpN]).trim() : '', parseAmountVal(row[iExpA])],
-      ];
-      for (const [type, name, amount] of pairs) {
-        if (!amount || amount <= 0 || SKIP_NAMES.test(name)) continue;
-        const note = [name, extraNote].filter(Boolean).join(' ');
-        out.push({ date, type, category: guessCategory(name, type === 'income'), amount, note, valid: true });
+      const hasExpenseSide = !!expName || (expAmount !== null && expAmount > 0);
+
+      if (incAmount !== null && incAmount > 0 && !SKIP_NAMES.test(incName)) {
+        const isClaimPaid = hasExpenseSide;
+        const note = [incName, isClaimPaid ? expName : '', extraNote, isClaimPaid ? CLAIM_PAID : ''].filter(Boolean).join(' ');
+        out.push({
+          date,
+          type: 'income',
+          category: isClaimPaid ? '還款' : guessCategory(incName || extraNote, true),
+          amount: incAmount,
+          note,
+          valid: true,
+        });
+      }
+
+      if (expAmount !== null && expAmount > 0 && !SKIP_NAMES.test(expName)) {
+        const claimNote = incAmount === 0 ? CLAIM_PENDING : (incAmount !== null && incAmount > 0 ? CLAIM_PAID : '');
+        const note = [expName, extraNote, claimNote].filter(Boolean).join(' ');
+        out.push({
+          date,
+          type: 'expense',
+          category: guessCategory(expName || extraNote, false),
+          amount: expAmount,
+          note,
+          valid: true,
+        });
       }
     }
   } else {
