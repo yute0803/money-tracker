@@ -1,5 +1,5 @@
-﻿/* ================= 資料層 ================= */
-const APP_VERSION = 'v11-fast-sync';
+/* ================= 資料層 ================= */
+const APP_VERSION = 'v12';
 const STORE_ENTRIES = 'mt.entries';
 const STORE_CATS = 'mt.categories';
 
@@ -918,13 +918,12 @@ function stopSync() {
 async function computeMissing() {
   const snap = await entriesCol().get({ source: 'server' });
   const cloudIds = new Set(snap.docs.map((d) => d.id));
-  const ckey = (e) => [e.date, e.type, e.category, e.amount, e.note].join('|');
   const cloudCount = new Map();
-  snap.docs.forEach((d) => { const k = ckey(d.data()); cloudCount.set(k, (cloudCount.get(k) || 0) + 1); });
+  snap.docs.forEach((d) => { const k = contentKey(d.data()); cloudCount.set(k, (cloudCount.get(k) || 0) + 1); });
   const missing = [];
   for (const e of entries) {
     if (cloudIds.has(e.id)) continue;
-    const k = ckey(e);
+    const k = contentKey(e);
     const c = cloudCount.get(k) || 0;
     if (c > 0) { cloudCount.set(k, c - 1); continue; }
     missing.push(e);
@@ -936,25 +935,10 @@ function contentKey(e) {
   return [e.date, e.type, e.category, e.amount, e.note].join('|');
 }
 
-function dedupeEntriesInMemory() {
-  const seen = new Set();
-  const clean = [];
-  for (const e of entries) {
-    const k = contentKey(e);
-    if (seen.has(k)) continue;
-    seen.add(k);
-    clean.push(e);
-  }
-  const removed = entries.length - clean.length;
-  entries = clean;
-  saveEntries();
-  refreshUI();
-  return removed;
-}
-
 async function runFullSync(label = '同步中…') {
   if (!cloudUser || syncBusy) return { uploaded: 0, downloaded: 0, cloudSize: cloudEntryCount || 0 };
   syncBusy = true;
+  lastFullSyncAt = Date.now();
   setSyncStatus(label);
   try {
     const { missing, cloudSize, cloudEntries } = await computeMissing();
@@ -1143,16 +1127,52 @@ $('#btn-sync').addEventListener('click', async () => {
   catch (err) { console.error(err); }
 });
 
-$('#btn-dedupe').addEventListener('click', () => {
-  const removed = dedupeEntriesInMemory();
-  toast(removed ? `已整理重複資料:移除 ${fmt(removed)} 筆` : '沒有找到完全重複的資料');
+$('#btn-dedupe').addEventListener('click', async () => {
+  if (syncBusy) return;
+  // 先計算,經使用者確認後才動資料
+  const seen = new Set();
+  const removed = [];
+  const clean = [];
+  for (const e of entries) {
+    const k = contentKey(e);
+    if (seen.has(k)) { removed.push(e); continue; }
+    seen.add(k);
+    clean.push(e);
+  }
+  if (!removed.length) { toast('沒有找到內容完全相同的資料'); return; }
+  const msg = `找到 ${fmt(removed.length)} 筆內容完全相同的紀錄(同日期、同分類、同金額、同備註)。\n\n⚠️ 注意:如果你真的在同一天記過兩筆一模一樣的帳(例如兩趟同價錢的計程車),第二筆也會被當成重複移除。\n\n建議先「匯出成 Excel」備份再執行。確定要移除嗎?`;
+  if (!confirm(msg)) return;
+  entries = clean;
+  saveEntries();
+  refreshUI();
+  if (cloudUser) {
+    syncBusy = true;
+    renderSettings();
+    try {
+      for (let i = 0; i < removed.length; i += 450) {
+        const batch = fbDb.batch();
+        removed.slice(i, i + 450).forEach((e) => batch.delete(entriesCol().doc(e.id)));
+        await withTimeout(batch.commit(), 90000, '清除雲端重複');
+      }
+      cloudEntryCount = entries.length;
+      lastSyncAt = new Date();
+      toast(`✅ 已移除 ${fmt(removed.length)} 筆重複(本機與雲端)`);
+    } catch (err) {
+      console.error(err);
+      toast(cloudErrHint(err));
+    } finally {
+      syncBusy = false;
+      syncStatusText = '';
+      renderSettings();
+    }
+  } else {
+    toast(`已移除 ${fmt(removed.length)} 筆重複`);
+  }
 });
 
 $('#btn-force-upload').addEventListener('click', async () => {
   if (!cloudUser || syncBusy) return;
-  const before = entries.length;
-  const removed = dedupeEntriesInMemory();
-  const msg = `這會用本機 ${fmt(entries.length)} 筆資料覆蓋雲端資料。\n\n本機原本 ${fmt(before)} 筆,已先去除完全重複 ${fmt(removed)} 筆。\n\n確定要繼續嗎?`;
+  const msg = `這會用本機 ${fmt(entries.length)} 筆資料覆蓋雲端資料(雲端多出來的會被刪除)。\n\n確定要繼續嗎?`;
   if (!confirm(msg)) return;
   syncBusy = true;
   renderSettings();
@@ -1209,8 +1229,12 @@ $('#btn-force-download').addEventListener('click', async () => {
   }
 });
 
+// 自動同步節流:15 分鐘內不重複觸發,避免每次切回畫面都全量讀取雲端(免費額度有限)
+const AUTO_SYNC_MIN_INTERVAL = 15 * 60 * 1000;
+let lastFullSyncAt = 0;
 function scheduleForegroundSync() {
   if (!cloudUser || syncBusy) return;
+  if (Date.now() - lastFullSyncAt < AUTO_SYNC_MIN_INTERVAL) return;
   runFullSync('自動同步中…').catch(() => {});
 }
 window.addEventListener('online', scheduleForegroundSync);
