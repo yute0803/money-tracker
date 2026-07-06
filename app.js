@@ -1,5 +1,5 @@
 /* ================= 資料層 ================= */
-const APP_VERSION = 'v10';
+const APP_VERSION = 'v11';
 const STORE_ENTRIES = 'mt.entries';
 const STORE_CATS = 'mt.categories';
 
@@ -377,8 +377,10 @@ function renderSettings() {
     logoutBtn.classList.add('hidden');
     syncBtn.classList.add('hidden');
   } else if (cloudUser) {
-    const cloudText = cloudEntryCount === null ? '正在讀取雲端資料…' : `雲端目前 ${fmt(cloudEntryCount)} 筆`;
-    acc.textContent = `已登入:${cloudUser.email}。${cloudText},資料會自動同步。`;
+    const uidText = cloudUser.uid ? `UID:${cloudUser.uid.slice(0, 8)}` : '';
+    const sourceText = cloudEntrySource ? `(${cloudEntrySource}${cloudHasPendingWrites ? ',待上傳' : ''})` : '';
+    const cloudText = cloudEntryCount === null ? '正在讀取雲端資料…' : `雲端目前 ${fmt(cloudEntryCount)} 筆${sourceText}`;
+    acc.textContent = `已登入:${cloudUser.email} ${uidText}。${cloudText},資料會自動同步。`;
     loginBtn.classList.add('hidden');
     logoutBtn.classList.remove('hidden');
     syncBtn.classList.remove('hidden');
@@ -840,6 +842,8 @@ const cloudEnabled = !!window.FIREBASE_CONFIG && typeof firebase !== 'undefined'
 let fbAuth = null, fbDb = null, cloudUser = null;
 let unsubEntries = null, unsubCats = null;
 let cloudEntryCount = null;
+let cloudEntrySource = '';
+let cloudHasPendingWrites = false;
 
 if (cloudEnabled) {
   firebase.initializeApp(window.FIREBASE_CONFIG);
@@ -862,6 +866,8 @@ function metaDoc() { return fbDb.collection('users').doc(cloudUser.uid).collecti
 
 async function startSync(u) {
   cloudEntryCount = null;
+  cloudEntrySource = '';
+  cloudHasPendingWrites = false;
   renderSettings();
   // 本機既有資料屬於這個帳號(或從未登入過)才併入雲端,避免混到別人的帳號
   const lastUid = localStorage.getItem('mt.lastUid');
@@ -876,8 +882,10 @@ async function startSync(u) {
     const catSnap = await metaDoc().get();
     if (!catSnap.exists) await metaDoc().set({ categories });
   }
-  unsubEntries = entriesCol().onSnapshot((snap) => {
+  unsubEntries = entriesCol().onSnapshot({ includeMetadataChanges: true }, (snap) => {
     cloudEntryCount = snap.size;
+    cloudEntrySource = snap.metadata.fromCache ? '快取' : '伺服器';
+    cloudHasPendingWrites = snap.metadata.hasPendingWrites;
     entries = snap.docs.map((d) => d.data());
     saveEntries();
     refreshUI();
@@ -892,11 +900,16 @@ function stopSync() {
   if (unsubEntries) { unsubEntries(); unsubEntries = null; }
   if (unsubCats) { unsubCats(); unsubCats = null; }
   cloudEntryCount = null;
+  cloudEntrySource = '';
+  cloudHasPendingWrites = false;
 }
 
 /** 比對本機與雲端:回傳雲端缺少的本機紀錄(含內容去重,避免兩台裝置各匯同份 Excel 變兩份) */
 async function computeMissing() {
-  const snap = await entriesCol().get();
+  const snap = await entriesCol().get({ source: 'server' });
+  cloudEntryCount = snap.size;
+  cloudEntrySource = '伺服器';
+  cloudHasPendingWrites = false;
   const cloudIds = new Set(snap.docs.map((d) => d.id));
   const ckey = (e) => [e.date, e.type, e.category, e.amount, e.note].join('|');
   const cloudCount = new Map();
@@ -957,8 +970,13 @@ async function bulkAddEntries(list, replace) {
   if (replace) await clearAllEntries();
   entries = entries.concat(list);
   saveEntries();
-  // 雲端上傳移到背景執行,不擋住畫面
-  if (cloudUser) uploadInBackground(list);
+  if (cloudUser) {
+    toast(`雲端上傳中… 0/${fmt(list.length)} 筆`);
+    await uploadEntries(list, (done, total) => toast(`雲端上傳中… ${fmt(done)}/${fmt(total)} 筆`));
+    cloudEntryCount = entries.length;
+    cloudEntrySource = '伺服器';
+    cloudHasPendingWrites = false;
+  }
 }
 async function clearAllEntries() {
   const old = entries;
@@ -1033,6 +1051,8 @@ $('#btn-sync').addEventListener('click', async () => {
       refreshUI();
     }
     cloudEntryCount = cloudSize + missing.length;
+    cloudEntrySource = '伺服器';
+    cloudHasPendingWrites = false;
     if (missing.length || download.length) {
       toast(`✅ 同步完成:上傳 ${fmt(missing.length)} 筆、下載 ${fmt(download.length)} 筆`);
     } else {
