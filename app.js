@@ -1,5 +1,5 @@
 /* ================= 資料層 ================= */
-const APP_VERSION = 'v10';
+const APP_VERSION = 'v11-fast-sync';
 const STORE_ENTRIES = 'mt.entries';
 const STORE_CATS = 'mt.categories';
 
@@ -378,7 +378,8 @@ function renderSettings() {
     syncBtn.classList.add('hidden');
   } else if (cloudUser) {
     const cloudText = cloudEntryCount === null ? '正在讀取雲端資料…' : `雲端目前 ${fmt(cloudEntryCount)} 筆`;
-    acc.textContent = `已登入:${cloudUser.email}。${cloudText},資料會自動同步。`;
+    const syncText = syncBusy ? '同步中…' : (lastSyncAt ? `上次同步 ${lastSyncAt.toLocaleTimeString('zh-Hant-TW', { hour: '2-digit', minute: '2-digit' })}` : '等待同步');
+    acc.textContent = `已登入:${cloudUser.email}。${cloudText},${syncText}。`;
     loginBtn.classList.add('hidden');
     logoutBtn.classList.remove('hidden');
     syncBtn.classList.remove('hidden');
@@ -840,6 +841,8 @@ const cloudEnabled = !!window.FIREBASE_CONFIG && typeof firebase !== 'undefined'
 let fbAuth = null, fbDb = null, cloudUser = null;
 let unsubEntries = null, unsubCats = null;
 let cloudEntryCount = null;
+let syncBusy = false;
+let lastSyncAt = null;
 
 if (cloudEnabled) {
   firebase.initializeApp(window.FIREBASE_CONFIG);
@@ -866,18 +869,20 @@ async function startSync(u) {
   // 本機既有資料屬於這個帳號(或從未登入過)才併入雲端,避免混到別人的帳號
   const lastUid = localStorage.getItem('mt.lastUid');
   localStorage.setItem('mt.lastUid', u.uid);
-  if (entries.length && (!lastUid || lastUid === u.uid)) {
-    const { missing } = await computeMissing();
-    if (missing.length) {
-      toast(`正在把本機 ${fmt(missing.length)} 筆資料合併到雲端…`);
-      await uploadEntries(missing, (done, total) => toast(`首次同步中… ${fmt(done)}/${fmt(total)} 筆`));
-      toast('✅ 首次同步完成');
-    }
-    const catSnap = await metaDoc().get();
-    if (!catSnap.exists) await metaDoc().set({ categories });
+  if (!lastUid || lastUid === u.uid) {
+    try { await runFullSync('登入同步中…'); }
+    catch (err) { console.error(err); }
+    try {
+      const catSnap = await metaDoc().get();
+      if (!catSnap.exists) await metaDoc().set({ categories });
+    } catch (err) { console.error(err); }
   }
   unsubEntries = entriesCol().onSnapshot((snap) => {
     cloudEntryCount = snap.size;
+    if (syncBusy && snap.size < entries.length) {
+      renderSettings();
+      return;
+    }
     entries = snap.docs.map((d) => d.data());
     saveEntries();
     refreshUI();
@@ -892,11 +897,12 @@ function stopSync() {
   if (unsubEntries) { unsubEntries(); unsubEntries = null; }
   if (unsubCats) { unsubCats(); unsubCats = null; }
   cloudEntryCount = null;
+  syncBusy = false;
 }
 
 /** 比對本機與雲端:回傳雲端缺少的本機紀錄(含內容去重,避免兩台裝置各匯同份 Excel 變兩份) */
 async function computeMissing() {
-  const snap = await entriesCol().get();
+  const snap = await entriesCol().get({ source: 'server' });
   const cloudIds = new Set(snap.docs.map((d) => d.id));
   const ckey = (e) => [e.date, e.type, e.category, e.amount, e.note].join('|');
   const cloudCount = new Map();
@@ -912,17 +918,63 @@ async function computeMissing() {
   return { missing, cloudSize: snap.size, cloudEntries: snap.docs.map((d) => d.data()) };
 }
 
+function contentKey(e) {
+  return [e.date, e.type, e.category, e.amount, e.note].join('|');
+}
+
+async function runFullSync(label = '同步中…') {
+  if (!cloudUser || syncBusy) return { uploaded: 0, downloaded: 0, cloudSize: cloudEntryCount || 0 };
+  syncBusy = true;
+  toast(label);
+  try {
+    const { missing, cloudSize, cloudEntries } = await computeMissing();
+    const localIds = new Set(entries.map((e) => e.id));
+    const localCount = new Map();
+    entries.forEach((e) => localCount.set(contentKey(e), (localCount.get(contentKey(e)) || 0) + 1));
+    const download = [];
+    cloudEntries.forEach((e) => {
+      if (localIds.has(e.id)) return;
+      const k = contentKey(e);
+      const n = localCount.get(k) || 0;
+      if (n > 0) { localCount.set(k, n - 1); return; }
+      download.push(e);
+    });
+    if (missing.length) {
+      await uploadEntries(missing, (done, total) => toast(`補傳中… ${fmt(done)}/${fmt(total)} 筆`));
+    }
+    if (download.length) {
+      entries = entries.concat(download);
+      saveEntries();
+      refreshUI();
+    }
+    cloudEntryCount = cloudSize + missing.length;
+    lastSyncAt = new Date();
+    toast(missing.length || download.length
+      ? `✅ 同步完成:上傳 ${fmt(missing.length)} 筆、下載 ${fmt(download.length)} 筆`
+      : `✅ 已是最新:雲端 ${fmt(cloudEntryCount)} 筆、本機 ${fmt(entries.length)} 筆`);
+    renderSettings();
+    return { uploaded: missing.length, downloaded: download.length, cloudSize: cloudEntryCount };
+  } catch (err) {
+    console.error(err);
+    toast(cloudErrHint(err));
+    throw err;
+  } finally {
+    syncBusy = false;
+    renderSettings();
+  }
+}
+
 async function uploadEntries(list, onProgress) {
   const chunks = [];
   for (let i = 0; i < list.length; i += 450) chunks.push(list.slice(i, i + 450));
   let done = 0;
-  await Promise.all(chunks.map(async (chunk) => {
+  for (const chunk of chunks) {
     const batch = fbDb.batch();
     chunk.forEach((e) => batch.set(entriesCol().doc(e.id), e));
     await batch.commit();
     done += chunk.length;
     if (onProgress) onProgress(done, list.length);
-  }));
+  }
 }
 
 function cloudErrHint(err) {
@@ -957,8 +1009,18 @@ async function bulkAddEntries(list, replace) {
   if (replace) await clearAllEntries();
   entries = entries.concat(list);
   saveEntries();
-  // 雲端上傳移到背景執行,不擋住畫面
-  if (cloudUser) uploadInBackground(list);
+  if (cloudUser) {
+    syncBusy = true;
+    try {
+      await uploadEntries(list, (done, total) => toast(`雲端上傳中… ${fmt(done)}/${fmt(total)} 筆`));
+      cloudEntryCount = (cloudEntryCount || 0) + list.length;
+      lastSyncAt = new Date();
+      toast('✅ 雲端上傳完成');
+    } finally {
+      syncBusy = false;
+      renderSettings();
+    }
+  }
 }
 async function clearAllEntries() {
   const old = entries;
@@ -1009,37 +1071,18 @@ $('#btn-login').addEventListener('click', async () => {
 
 $('#btn-sync').addEventListener('click', async () => {
   if (!cloudUser) return;
-  toast('雙向檢查同步狀態中…');
-  try {
-    const { missing, cloudSize, cloudEntries } = await computeMissing();
-    const localIds = new Set(entries.map((e) => e.id));
-    const localKeyCount = new Map();
-    const ekey = (e) => [e.date, e.type, e.category, e.amount, e.note].join('|');
-    entries.forEach((e) => localKeyCount.set(ekey(e), (localKeyCount.get(ekey(e)) || 0) + 1));
-    const download = [];
-    cloudEntries.forEach((e) => {
-      if (localIds.has(e.id)) return;
-      const k = ekey(e);
-      const n = localKeyCount.get(k) || 0;
-      if (n > 0) { localKeyCount.set(k, n - 1); return; }
-      download.push(e);
-    });
-    if (missing.length) {
-      await uploadEntries(missing, (done, total) => toast(`補傳中… ${fmt(done)}/${fmt(total)} 筆`));
-    }
-    if (download.length) {
-      entries = entries.concat(download);
-      saveEntries();
-      refreshUI();
-    }
-    cloudEntryCount = cloudSize + missing.length;
-    if (missing.length || download.length) {
-      toast(`✅ 同步完成:上傳 ${fmt(missing.length)} 筆、下載 ${fmt(download.length)} 筆`);
-    } else {
-      toast(`✅ 已是最新:雲端 ${fmt(cloudSize)} 筆、本機 ${fmt(entries.length)} 筆`);
-    }
-    renderSettings();
-  } catch (err) { console.error(err); toast(cloudErrHint(err)); }
+  try { await runFullSync('雙向檢查同步狀態中…'); }
+  catch (err) { console.error(err); }
+});
+
+function scheduleForegroundSync() {
+  if (!cloudUser || syncBusy) return;
+  runFullSync('自動同步中…').catch(() => {});
+}
+window.addEventListener('online', scheduleForegroundSync);
+window.addEventListener('focus', scheduleForegroundSync);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') scheduleForegroundSync();
 });
 $('#btn-logout').addEventListener('click', async () => {
   if (!confirm('確定要登出嗎?登出後這台裝置上的資料會清空(雲端資料不受影響,重新登入即可取回)。')) return;
