@@ -1,4 +1,4 @@
-/* ================= 資料層 ================= */
+﻿/* ================= 資料層 ================= */
 const APP_VERSION = 'v11-fast-sync';
 const STORE_ENTRIES = 'mt.entries';
 const STORE_CATS = 'mt.categories';
@@ -374,6 +374,7 @@ function renderSettings() {
   const dedupeBtn = $('#btn-dedupe');
   const forceUploadBtn = $('#btn-force-upload');
   const forceDownloadBtn = $('#btn-force-download');
+  [syncBtn, dedupeBtn, forceUploadBtn, forceDownloadBtn, logoutBtn].forEach((btn) => { if (btn) btn.disabled = !!syncBusy; });
   if (typeof cloudEnabled === 'undefined' || !cloudEnabled) {
     acc.textContent = '雲端同步尚未設定,資料只保存在此裝置。';
     loginBtn.classList.add('hidden');
@@ -384,7 +385,7 @@ function renderSettings() {
     forceDownloadBtn.classList.add('hidden');
   } else if (cloudUser) {
     const cloudText = cloudEntryCount === null ? '正在讀取雲端資料…' : `雲端目前 ${fmt(cloudEntryCount)} 筆`;
-    const syncText = syncBusy ? '同步中…' : (lastSyncAt ? `上次同步 ${lastSyncAt.toLocaleTimeString('zh-Hant-TW', { hour: '2-digit', minute: '2-digit' })}` : '等待同步');
+    const syncText = syncBusy ? (syncStatusText || '同步中…') : (lastSyncAt ? `上次同步 ${lastSyncAt.toLocaleTimeString('zh-Hant-TW', { hour: '2-digit', minute: '2-digit' })}` : '等待同步');
     acc.textContent = `已登入:${cloudUser.email}。${cloudText},${syncText}。`;
     loginBtn.classList.add('hidden');
     logoutBtn.classList.remove('hidden');
@@ -855,6 +856,7 @@ let unsubEntries = null, unsubCats = null;
 let cloudEntryCount = null;
 let syncBusy = false;
 let lastSyncAt = null;
+let syncStatusText = '';
 
 if (cloudEnabled) {
   firebase.initializeApp(window.FIREBASE_CONFIG);
@@ -953,7 +955,7 @@ function dedupeEntriesInMemory() {
 async function runFullSync(label = '同步中…') {
   if (!cloudUser || syncBusy) return { uploaded: 0, downloaded: 0, cloudSize: cloudEntryCount || 0 };
   syncBusy = true;
-  toast(label);
+  setSyncStatus(label);
   try {
     const { missing, cloudSize, cloudEntries } = await computeMissing();
     const localIds = new Set(entries.map((e) => e.id));
@@ -988,8 +990,23 @@ async function runFullSync(label = '同步中…') {
     throw err;
   } finally {
     syncBusy = false;
+    syncStatusText = '';
     renderSettings();
   }
+}
+
+function setSyncStatus(text) {
+  syncStatusText = text;
+  toast(text);
+  renderSettings();
+}
+
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label}逾時,請確認網路後再試一次`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 async function uploadEntries(list, onProgress) {
@@ -999,7 +1016,7 @@ async function uploadEntries(list, onProgress) {
   for (const chunk of chunks) {
     const batch = fbDb.batch();
     chunk.forEach((e) => batch.set(entriesCol().doc(e.id), e));
-    await batch.commit();
+    await withTimeout(batch.commit(), 90000, '雲端上傳');
     done += chunk.length;
     if (onProgress) onProgress(done, list.length);
   }
@@ -1008,11 +1025,11 @@ async function uploadEntries(list, onProgress) {
 async function deleteAllCloudEntries(onProgress) {
   let deleted = 0;
   while (true) {
-    const snap = await entriesCol().limit(450).get({ source: 'server' });
+    const snap = await withTimeout(entriesCol().limit(450).get({ source: 'server' }), 90000, '讀取雲端資料');
     if (snap.empty) break;
     const batch = fbDb.batch();
     snap.docs.forEach((d) => batch.delete(d.ref));
-    await batch.commit();
+    await withTimeout(batch.commit(), 90000, '清空雲端');
     deleted += snap.size;
     if (onProgress) onProgress(deleted);
   }
@@ -1136,9 +1153,9 @@ $('#btn-force-upload').addEventListener('click', async () => {
   syncBusy = true;
   renderSettings();
   try {
-    toast('正在清空雲端資料…');
-    await deleteAllCloudEntries((done) => toast(`清空雲端中… 已刪 ${fmt(done)} 筆`));
-    await uploadEntries(entries, (done, total) => toast(`強制上傳中… ${fmt(done)}/${fmt(total)} 筆`));
+    setSyncStatus('正在清空雲端資料…');
+    await deleteAllCloudEntries((done) => setSyncStatus(`清空雲端中… 已刪 ${fmt(done)} 筆`));
+    await uploadEntries(entries, (done, total) => setSyncStatus(`強制上傳中… ${fmt(done)}/${fmt(total)} 筆`));
     await metaDoc().set({ categories }, { merge: true });
     cloudEntryCount = entries.length;
     lastSyncAt = new Date();
@@ -1148,6 +1165,7 @@ $('#btn-force-upload').addEventListener('click', async () => {
     toast(cloudErrHint(err));
   } finally {
     syncBusy = false;
+    syncStatusText = '';
     renderSettings();
   }
 });
@@ -1158,7 +1176,7 @@ $('#btn-force-download').addEventListener('click', async () => {
   syncBusy = true;
   renderSettings();
   try {
-    toast('正在從雲端下載…');
+    setSyncStatus('正在從雲端下載…');
     const cloudEntries = await fetchCloudEntries();
     entries = cloudEntries;
     saveEntries();
@@ -1177,6 +1195,7 @@ $('#btn-force-download').addEventListener('click', async () => {
     toast(cloudErrHint(err));
   } finally {
     syncBusy = false;
+    syncStatusText = '';
     renderSettings();
   }
 });
@@ -1209,3 +1228,4 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   });
 }
+
