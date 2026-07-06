@@ -1022,23 +1022,27 @@ async function uploadEntries(list, onProgress) {
   }
 }
 
-async function deleteAllCloudEntries(onProgress) {
+async function deleteCloudDocs(docs, onProgress) {
   let deleted = 0;
-  while (true) {
-    const snap = await withTimeout(entriesCol().limit(450).get({ source: 'server' }), 90000, '讀取雲端資料');
-    if (snap.empty) break;
+  for (let i = 0; i < docs.length; i += 450) {
+    const chunk = docs.slice(i, i + 450);
     const batch = fbDb.batch();
-    snap.docs.forEach((d) => batch.delete(d.ref));
+    chunk.forEach((d) => batch.delete(d.ref));
     await withTimeout(batch.commit(), 90000, '清空雲端');
-    deleted += snap.size;
+    deleted += chunk.length;
     if (onProgress) onProgress(deleted);
   }
   return deleted;
 }
 
+async function fetchCloudDocs() {
+  const snap = await withTimeout(entriesCol().get({ source: 'server' }), 90000, '讀取雲端資料');
+  return snap.docs;
+}
+
 async function fetchCloudEntries() {
-  const snap = await entriesCol().get({ source: 'server' });
-  return snap.docs.map((d) => d.data());
+  const docs = await fetchCloudDocs();
+  return docs.map((d) => d.data());
 }
 
 function cloudErrHint(err) {
@@ -1153,8 +1157,13 @@ $('#btn-force-upload').addEventListener('click', async () => {
   syncBusy = true;
   renderSettings();
   try {
-    setSyncStatus('正在清空雲端資料…');
-    await deleteAllCloudEntries((done) => setSyncStatus(`清空雲端中… 已刪 ${fmt(done)} 筆`));
+    setSyncStatus('正在讀取雲端現有資料…');
+    const cloudDocs = await fetchCloudDocs();
+    const localIds = new Set(entries.map((e) => e.id));
+    const docsToDelete = cloudDocs.filter((d) => !localIds.has(d.id));
+    if (docsToDelete.length) {
+      await deleteCloudDocs(docsToDelete, (done) => setSyncStatus(`移除雲端多餘資料… ${fmt(done)}/${fmt(docsToDelete.length)} 筆`));
+    }
     await uploadEntries(entries, (done, total) => setSyncStatus(`強制上傳中… ${fmt(done)}/${fmt(total)} 筆`));
     await metaDoc().set({ categories }, { merge: true });
     cloudEntryCount = entries.length;
