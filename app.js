@@ -371,11 +371,17 @@ function renderSettings() {
   const loginBtn = $('#btn-login');
   const logoutBtn = $('#btn-logout');
   const syncBtn = $('#btn-sync');
+  const dedupeBtn = $('#btn-dedupe');
+  const forceUploadBtn = $('#btn-force-upload');
+  const forceDownloadBtn = $('#btn-force-download');
   if (typeof cloudEnabled === 'undefined' || !cloudEnabled) {
     acc.textContent = '雲端同步尚未設定,資料只保存在此裝置。';
     loginBtn.classList.add('hidden');
     logoutBtn.classList.add('hidden');
     syncBtn.classList.add('hidden');
+    dedupeBtn.classList.add('hidden');
+    forceUploadBtn.classList.add('hidden');
+    forceDownloadBtn.classList.add('hidden');
   } else if (cloudUser) {
     const cloudText = cloudEntryCount === null ? '正在讀取雲端資料…' : `雲端目前 ${fmt(cloudEntryCount)} 筆`;
     const syncText = syncBusy ? '同步中…' : (lastSyncAt ? `上次同步 ${lastSyncAt.toLocaleTimeString('zh-Hant-TW', { hour: '2-digit', minute: '2-digit' })}` : '等待同步');
@@ -383,11 +389,17 @@ function renderSettings() {
     loginBtn.classList.add('hidden');
     logoutBtn.classList.remove('hidden');
     syncBtn.classList.remove('hidden');
+    dedupeBtn.classList.remove('hidden');
+    forceUploadBtn.classList.remove('hidden');
+    forceDownloadBtn.classList.remove('hidden');
   } else {
     acc.textContent = '未登入:資料只保存在此裝置。使用 Google 登入後,資料會同步到你的帳號,換裝置也能接續使用。';
     loginBtn.classList.remove('hidden');
     logoutBtn.classList.add('hidden');
     syncBtn.classList.add('hidden');
+    dedupeBtn.classList.add('hidden');
+    forceUploadBtn.classList.add('hidden');
+    forceDownloadBtn.classList.add('hidden');
   }
   $('#app-version').textContent = `App 版本:${APP_VERSION}`;
   const store = (typeof cloudUser !== 'undefined' && cloudUser)
@@ -922,6 +934,22 @@ function contentKey(e) {
   return [e.date, e.type, e.category, e.amount, e.note].join('|');
 }
 
+function dedupeEntriesInMemory() {
+  const seen = new Set();
+  const clean = [];
+  for (const e of entries) {
+    const k = contentKey(e);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    clean.push(e);
+  }
+  const removed = entries.length - clean.length;
+  entries = clean;
+  saveEntries();
+  refreshUI();
+  return removed;
+}
+
 async function runFullSync(label = '同步中…') {
   if (!cloudUser || syncBusy) return { uploaded: 0, downloaded: 0, cloudSize: cloudEntryCount || 0 };
   syncBusy = true;
@@ -975,6 +1003,25 @@ async function uploadEntries(list, onProgress) {
     done += chunk.length;
     if (onProgress) onProgress(done, list.length);
   }
+}
+
+async function deleteAllCloudEntries(onProgress) {
+  let deleted = 0;
+  while (true) {
+    const snap = await entriesCol().limit(450).get({ source: 'server' });
+    if (snap.empty) break;
+    const batch = fbDb.batch();
+    snap.docs.forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+    deleted += snap.size;
+    if (onProgress) onProgress(deleted);
+  }
+  return deleted;
+}
+
+async function fetchCloudEntries() {
+  const snap = await entriesCol().get({ source: 'server' });
+  return snap.docs.map((d) => d.data());
 }
 
 function cloudErrHint(err) {
@@ -1073,6 +1120,65 @@ $('#btn-sync').addEventListener('click', async () => {
   if (!cloudUser) return;
   try { await runFullSync('雙向檢查同步狀態中…'); }
   catch (err) { console.error(err); }
+});
+
+$('#btn-dedupe').addEventListener('click', () => {
+  const removed = dedupeEntriesInMemory();
+  toast(removed ? `已整理重複資料:移除 ${fmt(removed)} 筆` : '沒有找到完全重複的資料');
+});
+
+$('#btn-force-upload').addEventListener('click', async () => {
+  if (!cloudUser || syncBusy) return;
+  const before = entries.length;
+  const removed = dedupeEntriesInMemory();
+  const msg = `這會用本機 ${fmt(entries.length)} 筆資料覆蓋雲端資料。\n\n本機原本 ${fmt(before)} 筆,已先去除完全重複 ${fmt(removed)} 筆。\n\n確定要繼續嗎?`;
+  if (!confirm(msg)) return;
+  syncBusy = true;
+  renderSettings();
+  try {
+    toast('正在清空雲端資料…');
+    await deleteAllCloudEntries((done) => toast(`清空雲端中… 已刪 ${fmt(done)} 筆`));
+    await uploadEntries(entries, (done, total) => toast(`強制上傳中… ${fmt(done)}/${fmt(total)} 筆`));
+    await metaDoc().set({ categories }, { merge: true });
+    cloudEntryCount = entries.length;
+    lastSyncAt = new Date();
+    toast(`✅ 已用本機 ${fmt(entries.length)} 筆覆蓋雲端`);
+  } catch (err) {
+    console.error(err);
+    toast(cloudErrHint(err));
+  } finally {
+    syncBusy = false;
+    renderSettings();
+  }
+});
+
+$('#btn-force-download').addEventListener('click', async () => {
+  if (!cloudUser || syncBusy) return;
+  if (!confirm('這會用雲端資料取代此裝置的本機資料。本機尚未上傳的資料可能會消失,確定要繼續嗎?')) return;
+  syncBusy = true;
+  renderSettings();
+  try {
+    toast('正在從雲端下載…');
+    const cloudEntries = await fetchCloudEntries();
+    entries = cloudEntries;
+    saveEntries();
+    const catSnap = await metaDoc().get({ source: 'server' });
+    const data = catSnap.data();
+    if (data && data.categories) {
+      categories = data.categories;
+      saveCats();
+    }
+    cloudEntryCount = entries.length;
+    lastSyncAt = new Date();
+    refreshUI();
+    toast(`✅ 已從雲端下載 ${fmt(entries.length)} 筆`);
+  } catch (err) {
+    console.error(err);
+    toast(cloudErrHint(err));
+  } finally {
+    syncBusy = false;
+    renderSettings();
+  }
 });
 
 function scheduleForegroundSync() {
