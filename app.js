@@ -872,14 +872,21 @@ function refreshUI() {
 /* ---- 登入 / 登出 ---- */
 $('#btn-login').addEventListener('click', async () => {
   const provider = new firebase.auth.GoogleAuthProvider();
-  const standalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
   try {
-    if (standalone) await fbAuth.signInWithRedirect(provider);
-    else await fbAuth.signInWithPopup(provider);
+    await fbAuth.signInWithPopup(provider);
+    toast('登入成功!');
   } catch (err) {
     if (err.code === 'auth/popup-closed-by-user' || err.code === 'auth/cancelled-popup-request') return;
-    try { await fbAuth.signInWithRedirect(provider); }
-    catch (e2) { toast('登入失敗:' + (e2.code || e2.message)); }
+    if (err.code === 'auth/popup-blocked') {
+      alert('登入視窗被瀏覽器擋住了。\n\n請允許此網站的「彈出式視窗」後再按一次登入:\n・電腦 Chrome:網址列右側會出現「已封鎖彈出式視窗」圖示,點它 → 一律允許\n・iPhone Safari:設定 App → Safari →「阻擋彈出式視窗」關閉');
+      return;
+    }
+    // 少數環境不支援彈出視窗(某些 App 內建瀏覽器),改用整頁跳轉
+    if (err.code === 'auth/operation-not-supported-in-this-environment') {
+      try { await fbAuth.signInWithRedirect(provider); } catch (e2) { toast('登入失敗:' + (e2.code || e2.message)); }
+      return;
+    }
+    toast('登入失敗:' + (err.code || err.message));
   }
 });
 $('#btn-logout').addEventListener('click', async () => {
