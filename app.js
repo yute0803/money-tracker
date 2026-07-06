@@ -1,5 +1,5 @@
 /* ================= 資料層 ================= */
-const APP_VERSION = 'v12';
+const APP_VERSION = 'v13';
 const STORE_ENTRIES = 'mt.entries';
 const STORE_CATS = 'mt.categories';
 
@@ -41,12 +41,12 @@ function shiftMonth(key, delta) {
 }
 
 let toastTimer;
-function toast(msg) {
+function toast(msg, ms = 2200) {
   const el = $('#toast');
   el.textContent = msg;
   el.classList.remove('hidden');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.add('hidden'), 2200);
+  toastTimer = setTimeout(() => el.classList.add('hidden'), ms);
 }
 
 function setupTypeToggle(containerId, onChange) {
@@ -827,6 +827,21 @@ $('#import-confirm').addEventListener('click', async () => {
   btn.textContent = '匯入中…';
   try {
     const newEntries = rows.map((r) => ({ id: uid(), date: r.date, type: r.type, category: r.category, amount: r.amount, note: r.note }));
+    // 重複匯入偵測:若大部分內容和現有紀錄相同,先警告(勾了「先清空」則不需檢查)
+    if (!$('#import-replace').checked && entries.length) {
+      const existing = new Map();
+      entries.forEach((e) => { const k = contentKey(e); existing.set(k, (existing.get(k) || 0) + 1); });
+      let dup = 0;
+      for (const e of newEntries) {
+        const k = contentKey(e);
+        const c = existing.get(k) || 0;
+        if (c > 0) { dup++; existing.set(k, c - 1); }
+      }
+      if (dup > newEntries.length * 0.5) {
+        const go = confirm(`⚠️ 這份資料看起來已經匯入過了:${fmt(dup)}/${fmt(newEntries.length)} 筆與現有紀錄內容相同。\n\n繼續匯入會變成重複資料。\n\n(若是想重新匯入,請取消後勾選「匯入前先清空現有資料」)\n\n仍要繼續嗎?`);
+        if (!go) { renderImportPreview(); return; }
+      }
+    }
     rows.forEach((r) => {
       if (!categories[r.type].includes(r.category)) categories[r.type].push(r.category);
     });
@@ -1030,9 +1045,10 @@ async function fetchCloudEntries() {
 }
 
 function cloudErrHint(err) {
-  return String(err.code || '').includes('permission')
-    ? '雲端寫入被拒(請到 Firebase 主控台確認 Firestore 安全規則已發布)'
-    : '雲端同步失敗:' + (err.code || err.message);
+  const code = String(err.code || '');
+  if (code.includes('resource-exhausted')) return '今日雲端免費額度已用完(每天下午 3 點左右重置),資料仍安全保存在本機';
+  if (code.includes('permission')) return '雲端寫入被拒(請到 Firebase 主控台確認 Firestore 安全規則已發布)';
+  return '雲端同步失敗:' + (err.code || err.message);
 }
 
 /** 背景上傳:不擋 UI,顯示進度,失敗時提示(資料已在本機) */
@@ -1063,11 +1079,16 @@ async function bulkAddEntries(list, replace) {
   saveEntries();
   if (cloudUser) {
     syncBusy = true;
+    renderSettings();
     try {
       await uploadEntries(list, (done, total) => toast(`雲端上傳中… ${fmt(done)}/${fmt(total)} 筆`));
       cloudEntryCount = (cloudEntryCount || 0) + list.length;
       lastSyncAt = new Date();
       toast('✅ 雲端上傳完成');
+    } catch (err) {
+      // 雲端失敗不影響本機匯入結果;之後手動或自動同步會補傳
+      console.error(err);
+      toast(cloudErrHint(err) + '。之後按「🔄 立即重新同步」即可補傳', 6000);
     } finally {
       syncBusy = false;
       renderSettings();
