@@ -124,6 +124,17 @@ let listMonth = monthKey(todayStr());
 document.querySelectorAll('#page-list .month-arrow').forEach((b) =>
   b.addEventListener('click', () => { listMonth = shiftMonth(listMonth, Number(b.dataset.nav)); renderList(); }));
 
+// 點月份 → 直接選年月
+function openMonthPicker(pickId, current) {
+  const p = document.getElementById(pickId);
+  p.value = current;
+  if (p.showPicker) { try { p.showPicker(); } catch { p.focus(); } } else p.focus();
+}
+$('#list-month-label').addEventListener('click', () => openMonthPicker('list-month-pick', listMonth));
+$('#list-month-pick').addEventListener('change', (e) => {
+  if (e.target.value) { listMonth = e.target.value; renderList(); }
+});
+
 function monthEntries(key) {
   return entries.filter((e) => monthKey(e.date) === key);
 }
@@ -244,8 +255,19 @@ let statsType = 'expense';
 document.querySelectorAll('#page-stats .month-arrow').forEach((b) =>
   b.addEventListener('click', () => { statsMonth = shiftMonth(statsMonth, Number(b.dataset.nav)); renderStats(); }));
 setupTypeToggle('stats-type-toggle', (t) => { statsType = t; renderStats(); });
+$('#stats-month-label').addEventListener('click', () => openMonthPicker('stats-month-pick', statsMonth));
+$('#stats-month-pick').addEventListener('change', (e) => {
+  if (e.target.value) { statsMonth = e.target.value; renderStats(); }
+});
 
 function renderStats() {
+  // 全部總覽(不分月份)
+  let tInc = 0, tExp = 0;
+  entries.forEach((e) => (e.type === 'income' ? (tInc += e.amount) : (tExp += e.amount)));
+  $('#total-income').textContent = fmt(tInc);
+  $('#total-expense').textContent = fmt(tExp);
+  $('#total-balance').textContent = fmt(tInc - tExp);
+
   $('#stats-month-label').textContent = monthLabel(statsMonth);
   const items = monthEntries(statsMonth).filter((e) => e.type === statsType);
   const byCat = new Map();
@@ -455,6 +477,7 @@ $('#import-file').addEventListener('change', async (ev) => {
     sheetSel.appendChild(o);
   });
   $('#import-sheet-row').classList.toggle('hidden', importWb.SheetNames.length <= 1);
+  $('#import-all-sheets').checked = importWb.SheetNames.length > 1; // 多工作表預設全部匯入
   loadSheet(importWb.SheetNames[0]);
   $('#import-overlay').classList.remove('hidden');
 });
@@ -776,6 +799,10 @@ $('#import-confirm').addEventListener('click', async () => {
     $('#import-overlay').classList.add('hidden');
     $('#import-replace').checked = false;
     toast(`成功匯入 ${rows.length} 筆紀錄`);
+    // 跳到最新一筆資料的月份,立刻看得到匯入成果
+    const latest = newEntries.reduce((m, e) => (e.date > m ? e.date : m), newEntries[0].date);
+    listMonth = monthKey(latest);
+    document.querySelector('.tab[data-page="list"]').click();
   } catch (err) {
     console.error(err);
     toast('匯入失敗:' + (err.code || err.message));
@@ -866,7 +893,17 @@ async function bulkAddEntries(list, replace) {
   if (replace) await clearAllEntries();
   entries = entries.concat(list);
   saveEntries();
-  if (cloudUser) await uploadEntries(list);
+  if (cloudUser) {
+    try {
+      await uploadEntries(list);
+    } catch (err) {
+      console.error(err);
+      const hint = String(err.code || '').includes('permission')
+        ? '雲端寫入被拒(請到 Firebase 主控台確認 Firestore 安全規則已發布)'
+        : '雲端同步失敗:' + (err.code || err.message);
+      toast(hint);
+    }
+  }
 }
 async function clearAllEntries() {
   const old = entries;

@@ -51,7 +51,8 @@
   <section id="page-list" class="page">
     <div class="month-nav">
       <button class="month-arrow" data-nav="-1">‹</button>
-      <span id="list-month-label" class="month-label"></span>
+      <button id="list-month-label" class="month-label month-btn"></button>
+      <input type="month" id="list-month-pick" class="month-pick" tabindex="-1">
       <button class="month-arrow" data-nav="1">›</button>
     </div>
     <div class="summary-row">
@@ -64,9 +65,15 @@
 
   <!-- ===== 統計頁 ===== -->
   <section id="page-stats" class="page">
+    <div class="summary-row total-row">
+      <div class="summary-cell"><div class="summary-title">全部收入</div><div id="total-income" class="summary-num income-text">0</div></div>
+      <div class="summary-cell"><div class="summary-title">全部支出</div><div id="total-expense" class="summary-num expense-text">0</div></div>
+      <div class="summary-cell"><div class="summary-title">總結餘</div><div id="total-balance" class="summary-num">0</div></div>
+    </div>
     <div class="month-nav">
       <button class="month-arrow" data-nav="-1">‹</button>
-      <span id="stats-month-label" class="month-label"></span>
+      <button id="stats-month-label" class="month-label month-btn"></button>
+      <input type="month" id="stats-month-pick" class="month-pick" tabindex="-1">
       <button class="month-arrow" data-nav="1">›</button>
     </div>
     <div class="type-toggle small" id="stats-type-toggle">
