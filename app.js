@@ -1,5 +1,5 @@
 /* ================= 資料層 ================= */
-const APP_VERSION = 'v8';
+const APP_VERSION = 'v9';
 const STORE_ENTRIES = 'mt.entries';
 const STORE_CATS = 'mt.categories';
 
@@ -417,6 +417,21 @@ $('#cat-add-btn').addEventListener('click', () => {
   $('#cat-new-name').value = '';
   renderSettings();
   renderAddCats();
+});
+
+$('#btn-update').addEventListener('click', async () => {
+  toast('清除快取並更新中…');
+  try {
+    if ('serviceWorker' in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      for (const r of regs) await r.unregister();
+    }
+    if (window.caches) {
+      const keys = await caches.keys();
+      for (const k of keys) await caches.delete(k);
+    }
+  } catch (e) { console.error(e); }
+  location.href = location.pathname + '?u=' + Date.now();
 });
 
 $('#btn-clear').addEventListener('click', async () => {
