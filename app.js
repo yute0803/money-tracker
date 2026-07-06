@@ -786,7 +786,7 @@ $('#import-confirm').addEventListener('click', async () => {
   if (!rows.length) { toast('沒有可匯入的資料'); return; }
   const btn = $('#import-confirm');
   btn.disabled = true;
-  btn.textContent = cloudUser ? '匯入並同步中…' : '匯入中…';
+  btn.textContent = '匯入中…';
   try {
     const newEntries = rows.map((r) => ({ id: uid(), date: r.date, type: r.type, category: r.category, amount: r.amount, note: r.note }));
     rows.forEach((r) => {
@@ -842,10 +842,21 @@ async function startSync(u) {
   if (entries.length && (!lastUid || lastUid === u.uid)) {
     const snap = await entriesCol().get();
     const cloudIds = new Set(snap.docs.map((d) => d.id));
-    const missing = entries.filter((e) => !cloudIds.has(e.id));
+    // 內容重複偵測:就算兩台裝置各匯過同一份 Excel(id 不同),合併時也不會變兩份
+    const ckey = (e) => [e.date, e.type, e.category, e.amount, e.note].join('|');
+    const cloudCount = new Map();
+    snap.docs.forEach((d) => { const k = ckey(d.data()); cloudCount.set(k, (cloudCount.get(k) || 0) + 1); });
+    const missing = [];
+    for (const e of entries) {
+      if (cloudIds.has(e.id)) continue;
+      const k = ckey(e);
+      const c = cloudCount.get(k) || 0;
+      if (c > 0) { cloudCount.set(k, c - 1); continue; } // 雲端已有相同內容,不重複上傳
+      missing.push(e);
+    }
     if (missing.length) {
-      toast(`正在把本機 ${missing.length} 筆資料同步到雲端…`);
-      await uploadEntries(missing);
+      toast(`正在把本機 ${fmt(missing.length)} 筆資料合併到雲端…`);
+      uploadInBackground(missing);
     }
     const catSnap = await metaDoc().get();
     if (!catSnap.exists) await metaDoc().set({ categories });
@@ -866,12 +877,30 @@ function stopSync() {
   if (unsubCats) { unsubCats(); unsubCats = null; }
 }
 
-async function uploadEntries(list) {
-  for (let i = 0; i < list.length; i += 450) {
+async function uploadEntries(list, onProgress) {
+  const chunks = [];
+  for (let i = 0; i < list.length; i += 450) chunks.push(list.slice(i, i + 450));
+  let done = 0;
+  await Promise.all(chunks.map(async (chunk) => {
     const batch = fbDb.batch();
-    list.slice(i, i + 450).forEach((e) => batch.set(entriesCol().doc(e.id), e));
+    chunk.forEach((e) => batch.set(entriesCol().doc(e.id), e));
     await batch.commit();
-  }
+    done += chunk.length;
+    if (onProgress) onProgress(done, list.length);
+  }));
+}
+
+function cloudErrHint(err) {
+  return String(err.code || '').includes('permission')
+    ? '雲端寫入被拒(請到 Firebase 主控台確認 Firestore 安全規則已發布)'
+    : '雲端同步失敗:' + (err.code || err.message);
+}
+
+/** 背景上傳:不擋 UI,顯示進度,失敗時提示(資料已在本機) */
+function uploadInBackground(list) {
+  uploadEntries(list, (done, total) => toast(`雲端同步中… ${fmt(done)}/${fmt(total)} 筆`))
+    .then(() => toast('✅ 雲端同步完成'))
+    .catch((err) => { console.error(err); toast(cloudErrHint(err)); });
 }
 
 /* ---- 資料寫入(登入時同步寫雲端) ---- */
@@ -893,17 +922,8 @@ async function bulkAddEntries(list, replace) {
   if (replace) await clearAllEntries();
   entries = entries.concat(list);
   saveEntries();
-  if (cloudUser) {
-    try {
-      await uploadEntries(list);
-    } catch (err) {
-      console.error(err);
-      const hint = String(err.code || '').includes('permission')
-        ? '雲端寫入被拒(請到 Firebase 主控台確認 Firestore 安全規則已發布)'
-        : '雲端同步失敗:' + (err.code || err.message);
-      toast(hint);
-    }
-  }
+  // 雲端上傳移到背景執行,不擋住畫面
+  if (cloudUser) uploadInBackground(list);
 }
 async function clearAllEntries() {
   const old = entries;
