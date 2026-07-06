@@ -1,4 +1,5 @@
 /* ================= 資料層 ================= */
+const APP_VERSION = 'v8';
 const STORE_ENTRIES = 'mt.entries';
 const STORE_CATS = 'mt.categories';
 
@@ -369,19 +370,24 @@ function renderSettings() {
   const acc = $('#account-status');
   const loginBtn = $('#btn-login');
   const logoutBtn = $('#btn-logout');
+  const syncBtn = $('#btn-sync');
   if (typeof cloudEnabled === 'undefined' || !cloudEnabled) {
     acc.textContent = '雲端同步尚未設定,資料只保存在此裝置。';
     loginBtn.classList.add('hidden');
     logoutBtn.classList.add('hidden');
+    syncBtn.classList.add('hidden');
   } else if (cloudUser) {
     acc.textContent = `已登入:${cloudUser.email}。資料會自動同步到雲端,離線記帳也會在連線後補同步。`;
     loginBtn.classList.add('hidden');
     logoutBtn.classList.remove('hidden');
+    syncBtn.classList.remove('hidden');
   } else {
     acc.textContent = '未登入:資料只保存在此裝置。使用 Google 登入後,資料會同步到你的帳號,換裝置也能接續使用。';
     loginBtn.classList.remove('hidden');
     logoutBtn.classList.add('hidden');
+    syncBtn.classList.add('hidden');
   }
+  $('#app-version').textContent = `App 版本:${APP_VERSION}`;
   const store = (typeof cloudUser !== 'undefined' && cloudUser) ? '已同步至雲端' : '保存在此裝置的瀏覽器中';
   $('#data-count').textContent = `目前共 ${entries.length} 筆紀錄,${store},建議定期匯出備份。`;
   const box = $('#cat-manage');
@@ -840,20 +846,7 @@ async function startSync(u) {
   const lastUid = localStorage.getItem('mt.lastUid');
   localStorage.setItem('mt.lastUid', u.uid);
   if (entries.length && (!lastUid || lastUid === u.uid)) {
-    const snap = await entriesCol().get();
-    const cloudIds = new Set(snap.docs.map((d) => d.id));
-    // 內容重複偵測:就算兩台裝置各匯過同一份 Excel(id 不同),合併時也不會變兩份
-    const ckey = (e) => [e.date, e.type, e.category, e.amount, e.note].join('|');
-    const cloudCount = new Map();
-    snap.docs.forEach((d) => { const k = ckey(d.data()); cloudCount.set(k, (cloudCount.get(k) || 0) + 1); });
-    const missing = [];
-    for (const e of entries) {
-      if (cloudIds.has(e.id)) continue;
-      const k = ckey(e);
-      const c = cloudCount.get(k) || 0;
-      if (c > 0) { cloudCount.set(k, c - 1); continue; } // 雲端已有相同內容,不重複上傳
-      missing.push(e);
-    }
+    const { missing } = await computeMissing();
     if (missing.length) {
       toast(`正在把本機 ${fmt(missing.length)} 筆資料合併到雲端…`);
       uploadInBackground(missing);
@@ -875,6 +868,24 @@ async function startSync(u) {
 function stopSync() {
   if (unsubEntries) { unsubEntries(); unsubEntries = null; }
   if (unsubCats) { unsubCats(); unsubCats = null; }
+}
+
+/** 比對本機與雲端:回傳雲端缺少的本機紀錄(含內容去重,避免兩台裝置各匯同份 Excel 變兩份) */
+async function computeMissing() {
+  const snap = await entriesCol().get();
+  const cloudIds = new Set(snap.docs.map((d) => d.id));
+  const ckey = (e) => [e.date, e.type, e.category, e.amount, e.note].join('|');
+  const cloudCount = new Map();
+  snap.docs.forEach((d) => { const k = ckey(d.data()); cloudCount.set(k, (cloudCount.get(k) || 0) + 1); });
+  const missing = [];
+  for (const e of entries) {
+    if (cloudIds.has(e.id)) continue;
+    const k = ckey(e);
+    const c = cloudCount.get(k) || 0;
+    if (c > 0) { cloudCount.set(k, c - 1); continue; }
+    missing.push(e);
+  }
+  return { missing, cloudSize: snap.size };
 }
 
 async function uploadEntries(list, onProgress) {
@@ -953,22 +964,38 @@ function refreshUI() {
 /* ---- 登入 / 登出 ---- */
 $('#btn-login').addEventListener('click', async () => {
   const provider = new firebase.auth.GoogleAuthProvider();
+  const standalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
   try {
     await fbAuth.signInWithPopup(provider);
     toast('登入成功!');
   } catch (err) {
     if (err.code === 'auth/popup-closed-by-user' || err.code === 'auth/cancelled-popup-request') return;
-    if (err.code === 'auth/popup-blocked') {
-      alert('登入視窗被瀏覽器擋住了。\n\n請允許此網站的「彈出式視窗」後再按一次登入:\n・電腦 Chrome:網址列右側會出現「已封鎖彈出式視窗」圖示,點它 → 一律允許\n・iPhone Safari:設定 App → Safari →「阻擋彈出式視窗」關閉');
-      return;
-    }
-    // 少數環境不支援彈出視窗(某些 App 內建瀏覽器),改用整頁跳轉
-    if (err.code === 'auth/operation-not-supported-in-this-environment') {
+    // 主畫面 App 或不支援彈窗的環境:改用整頁跳轉
+    if (standalone || err.code === 'auth/popup-blocked' || err.code === 'auth/operation-not-supported-in-this-environment') {
+      if (!standalone && err.code === 'auth/popup-blocked') {
+        alert('登入視窗被瀏覽器擋住了。\n\n請允許此網站的「彈出式視窗」後再按一次登入:\n・電腦 Chrome:網址列右側會出現「已封鎖彈出式視窗」圖示,點它 → 一律允許');
+        return;
+      }
       try { await fbAuth.signInWithRedirect(provider); } catch (e2) { toast('登入失敗:' + (e2.code || e2.message)); }
       return;
     }
     toast('登入失敗:' + (err.code || err.message));
   }
+});
+
+$('#btn-sync').addEventListener('click', async () => {
+  if (!cloudUser) return;
+  toast('檢查同步狀態中…');
+  try {
+    const { missing, cloudSize } = await computeMissing();
+    if (missing.length) {
+      await uploadEntries(missing, (done, total) => toast(`補傳中… ${fmt(done)}/${fmt(total)} 筆`));
+      toast(`✅ 同步完成:補傳 ${fmt(missing.length)} 筆,雲端共 ${fmt(cloudSize + missing.length)} 筆`);
+    } else {
+      toast(`✅ 已是最新:雲端 ${fmt(cloudSize)} 筆、本機 ${fmt(entries.length)} 筆`);
+    }
+    renderSettings();
+  } catch (err) { console.error(err); toast(cloudErrHint(err)); }
 });
 $('#btn-logout').addEventListener('click', async () => {
   if (!confirm('確定要登出嗎?登出後這台裝置上的資料會清空(雲端資料不受影響,重新登入即可取回)。')) return;
