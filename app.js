@@ -1,5 +1,5 @@
 /* ================= 資料層 ================= */
-const APP_VERSION = 'v16';
+const APP_VERSION = 'v17';
 const STORE_ENTRIES = 'mt.entries';
 const STORE_CATS = 'mt.categories';
 
@@ -1045,6 +1045,11 @@ function contentKey(e) {
 
 async function runFullSync(label = '同步中…') {
   if (!cloudUser || syncBusy) return { uploaded: 0, downloaded: 0, cloudSize: cloudEntryCount || 0 };
+  // 雲端尚未完成「以本機覆蓋」前,雲端內容不可靠:改跑覆蓋流程,絕不把雲端資料抓下來
+  if (localStorage.getItem('mt.replaceCloud') === '1') {
+    await reconcileCloudToLocal();
+    return { uploaded: 0, downloaded: 0, cloudSize: cloudEntryCount || 0 };
+  }
   syncBusy = true;
   lastFullSyncAt = Date.now();
   setSyncStatus(label);
