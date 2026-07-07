@@ -1,5 +1,5 @@
 /* ================= 資料層 ================= */
-const APP_VERSION = 'v13';
+const APP_VERSION = 'v14';
 const STORE_ENTRIES = 'mt.entries';
 const STORE_CATS = 'mt.categories';
 
@@ -898,7 +898,10 @@ async function startSync(u) {
   // 本機既有資料屬於這個帳號(或從未登入過)才併入雲端,避免混到別人的帳號
   const lastUid = localStorage.getItem('mt.lastUid');
   localStorage.setItem('mt.lastUid', u.uid);
-  if (!lastUid || lastUid === u.uid) {
+  if (localStorage.getItem('mt.replaceCloud') === '1' && entries.length) {
+    // 上次「以本機覆蓋雲端」沒完成(例如額度用盡):自動續傳
+    await reconcileCloudToLocal();
+  } else if (!lastUid || lastUid === u.uid) {
     try { await runFullSync('登入同步中…'); }
     catch (err) { console.error(err); }
     try {
@@ -908,6 +911,11 @@ async function startSync(u) {
   }
   unsubEntries = entriesCol().onSnapshot((snap) => {
     cloudEntryCount = snap.size;
+    // 「以本機覆蓋雲端」未完成前,雲端內容不可靠,不能反過來蓋掉本機
+    if (localStorage.getItem('mt.replaceCloud') === '1') {
+      renderSettings();
+      return;
+    }
     if (syncBusy && snap.size < entries.length) {
       renderSettings();
       return;
@@ -1074,7 +1082,17 @@ function removeEntryData(id) {
   if (cloudUser) entriesCol().doc(id).delete().catch(console.error);
 }
 async function bulkAddEntries(list, replace) {
-  if (replace) await clearAllEntries();
+  if (replace) {
+    // 「清空重匯」:本機立刻完成,雲端用「以本機覆蓋」方式在背景對齊;
+    // 額度不足時保留旗標,下次開啟 App 自動續傳
+    entries = list.slice();
+    saveEntries();
+    if (cloudUser) {
+      localStorage.setItem('mt.replaceCloud', '1');
+      await reconcileCloudToLocal();
+    }
+    return;
+  }
   entries = entries.concat(list);
   saveEntries();
   if (cloudUser) {
@@ -1095,15 +1113,50 @@ async function bulkAddEntries(list, replace) {
     }
   }
 }
+
+/** 以本機為準對齊雲端:刪掉雲端多餘的、上傳本機全部。完成才移除旗標,失敗會在下次開啟時自動重試 */
+async function reconcileCloudToLocal() {
+  if (!cloudUser || syncBusy) return;
+  syncBusy = true;
+  renderSettings();
+  try {
+    setSyncStatus('正在讀取雲端現有資料…');
+    const cloudDocs = await fetchCloudDocs();
+    const localIds = new Set(entries.map((e) => e.id));
+    const docsToDelete = cloudDocs.filter((d) => !localIds.has(d.id));
+    if (docsToDelete.length) {
+      await deleteCloudDocs(docsToDelete, (done) => setSyncStatus(`移除雲端舊資料… ${fmt(done)}/${fmt(docsToDelete.length)} 筆`));
+    }
+    await uploadEntries(entries, (done, total) => setSyncStatus(`上傳中… ${fmt(done)}/${fmt(total)} 筆`));
+    await metaDoc().set({ categories }, { merge: true });
+    localStorage.removeItem('mt.replaceCloud');
+    cloudEntryCount = entries.length;
+    lastSyncAt = new Date();
+    toast(`✅ 雲端已更新為 ${fmt(entries.length)} 筆`);
+  } catch (err) {
+    console.error(err);
+    toast(cloudErrHint(err) + '。本機資料已完成,下次開啟 App 會自動把雲端補齊', 7000);
+  } finally {
+    syncBusy = false;
+    syncStatusText = '';
+    renderSettings();
+  }
+}
 async function clearAllEntries() {
   const old = entries;
   entries = [];
   saveEntries();
   if (cloudUser) {
-    for (let i = 0; i < old.length; i += 450) {
-      const batch = fbDb.batch();
-      old.slice(i, i + 450).forEach((e) => batch.delete(entriesCol().doc(e.id)));
-      await batch.commit();
+    try {
+      for (let i = 0; i < old.length; i += 450) {
+        const batch = fbDb.batch();
+        old.slice(i, i + 450).forEach((e) => batch.delete(entriesCol().doc(e.id)));
+        await withTimeout(batch.commit(), 90000, '清除雲端資料');
+      }
+      cloudEntryCount = 0;
+    } catch (err) {
+      console.error(err);
+      toast(cloudErrHint(err), 6000);
     }
   }
 }
@@ -1195,29 +1248,8 @@ $('#btn-force-upload').addEventListener('click', async () => {
   if (!cloudUser || syncBusy) return;
   const msg = `這會用本機 ${fmt(entries.length)} 筆資料覆蓋雲端資料(雲端多出來的會被刪除)。\n\n確定要繼續嗎?`;
   if (!confirm(msg)) return;
-  syncBusy = true;
-  renderSettings();
-  try {
-    setSyncStatus('正在讀取雲端現有資料…');
-    const cloudDocs = await fetchCloudDocs();
-    const localIds = new Set(entries.map((e) => e.id));
-    const docsToDelete = cloudDocs.filter((d) => !localIds.has(d.id));
-    if (docsToDelete.length) {
-      await deleteCloudDocs(docsToDelete, (done) => setSyncStatus(`移除雲端多餘資料… ${fmt(done)}/${fmt(docsToDelete.length)} 筆`));
-    }
-    await uploadEntries(entries, (done, total) => setSyncStatus(`強制上傳中… ${fmt(done)}/${fmt(total)} 筆`));
-    await metaDoc().set({ categories }, { merge: true });
-    cloudEntryCount = entries.length;
-    lastSyncAt = new Date();
-    toast(`✅ 已用本機 ${fmt(entries.length)} 筆覆蓋雲端`);
-  } catch (err) {
-    console.error(err);
-    toast(cloudErrHint(err));
-  } finally {
-    syncBusy = false;
-    syncStatusText = '';
-    renderSettings();
-  }
+  localStorage.setItem('mt.replaceCloud', '1');
+  await reconcileCloudToLocal();
 });
 
 $('#btn-force-download').addEventListener('click', async () => {
@@ -1272,6 +1304,7 @@ $('#btn-logout').addEventListener('click', async () => {
   saveEntries();
   saveCats();
   localStorage.removeItem('mt.lastUid');
+  localStorage.removeItem('mt.replaceCloud');
   refreshUI();
   toast('已登出');
 });

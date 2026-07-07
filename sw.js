@@ -1,4 +1,4 @@
-const CACHE = 'money-tracker-v13';
+const CACHE = 'money-tracker-v14';
 const ASSETS = [
   './',
   './index.html',
