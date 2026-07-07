@@ -1,5 +1,5 @@
 /* ================= 資料層 ================= */
-const APP_VERSION = 'v15';
+const APP_VERSION = 'v16';
 const STORE_ENTRIES = 'mt.entries';
 const STORE_CATS = 'mt.categories';
 
@@ -192,6 +192,17 @@ $('#paste-parse').addEventListener('click', () => {
   $('#paste-overlay').classList.add('hidden');
   applyParsedBank(p);
 });
+
+// iPhone 捷徑等外部來源可用 ?add=<通知文字> 直接帶入
+(function () {
+  const t = new URLSearchParams(location.search).get('add');
+  if (!t) return;
+  history.replaceState(null, '', location.pathname); // 清掉網址參數,避免重新整理重複帶入
+  if (!applyParsedBank(parseBankNotification(t))) {
+    $('#paste-text').value = t;
+    $('#paste-overlay').classList.remove('hidden');
+  }
+})();
 
 /* ================= 明細頁 ================= */
 let listMonth = monthKey(todayStr());
