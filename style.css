@@ -186,6 +186,8 @@ input[type="date"].field-input { min-height: 46px; }
   padding: 13px 15px; border-radius: 12px; cursor: pointer;
 }
 .settings-btn.danger { color: var(--expense); }
+.paste-bank { margin-bottom: 14px; background: var(--card); text-align: center; }
+.paste-area { resize: vertical; min-height: 120px; margin-top: 10px; font-family: inherit; }
 .settings-info { font-size: 14px; color: var(--text-dim); padding: 2px 4px; line-height: 1.6; }
 .cat-manage { display: flex; flex-wrap: wrap; gap: 8px; }
 .cat-manage .cat-chip .x { margin-left: 6px; color: var(--text-dim); }

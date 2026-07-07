@@ -1,5 +1,5 @@
 /* ================= 資料層 ================= */
-const APP_VERSION = 'v14';
+const APP_VERSION = 'v15';
 const STORE_ENTRIES = 'mt.entries';
 const STORE_CATS = 'mt.categories';
 
@@ -117,6 +117,80 @@ $('#add-save').addEventListener('click', () => {
   $('#add-amount').value = '';
   $('#add-note').value = '';
   toast(`已記一筆${addType === 'expense' ? '支出' : '收入'} NT$ ${fmt(amount)}`);
+});
+
+/* ---- 貼上銀行通知,自動填入 ---- */
+// 依商店名稱推分類(比一般關鍵字規則更準,優先套用)
+const MERCHANT_RULES = [
+  [/加油|中油|台亞/, '加油'],
+  [/悠遊|一卡通|捷運|台鐵|高鐵|客運|公車|uber|計程|停車|遠通|etc/i, '交通'],
+  [/壽司|麥當勞|肯德基|摩斯|漢堡|必勝客|達美樂|星巴克|路易莎|85度|咖啡|手搖|飲料|茶|餐|食|麵|飯|鍋|燒|烤|炸|便當|早午|豆漿|披薩|丼|冰|甜|7-11|7-ELEVEN|統一超商|全家|familymart|萊爾富|OK超商|超商/i, '餐飲'],
+  [/電影|威秀|秀泰|ktv|錢櫃|好樂迪|netflix|spotify|steam|nintendo|playstation|遊戲/i, '娛樂'],
+  [/全聯|家樂福|大潤發|愛買|好市多|costco|蝦皮|momo|pchome|淘寶|露天|uniqlo|ikea|寶雅|屈臣氏|康是美|誠品|百貨/i, '購物'],
+  [/藥局|診所|醫院|牙醫|藥妝/, '醫療'],
+  [/中華電信|台灣大|遠傳|台電|自來水|瓦斯|電費|水費|房租/, '居住'],
+];
+function merchantCategory(name) {
+  if (!name) return null;
+  for (const [re, cat] of MERCHANT_RULES) if (re.test(name)) return cat;
+  return null;
+}
+
+/** 解析銀行通知文字(LINE/簡訊/App 推播),抓出金額、日期、商店、收支別 */
+function parseBankNotification(text) {
+  const t = String(text);
+  const out = { type: 'expense', amount: null, date: null, merchant: '' };
+  if (/退款|退刷|入帳|轉入|存入|薪資|匯入/.test(t)) out.type = 'income';
+  const amt = t.match(/(?:NT\$|NTD|新臺幣|新台幣)\s*([\d,]+(?:\.\d+)?)/i) || t.match(/(?:金額|消費|扣款)[^\d]{0,6}([\d,]+(?:\.\d+)?)/) || t.match(/([\d,]+(?:\.\d+)?)\s*元/);
+  if (amt) out.amount = parseFloat(amt[1].replace(/,/g, ''));
+  let m = t.match(/(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})/);
+  if (m) {
+    out.date = validDate(+m[1], +m[2], +m[3]);
+  } else if ((m = t.match(/(\d{1,2})[\/月](\d{1,2})/))) {
+    // 沒有年份:先當今年,若變成未來日期則視為去年
+    const y = new Date().getFullYear();
+    let d = validDate(y, +m[1], +m[2]);
+    if (d && d > todayStr()) d = validDate(y - 1, +m[1], +m[2]);
+    out.date = d;
+  }
+  m = t.match(/(?:商店名稱|消費商店|商店|特店|店名)[::\s]*([^\n◆♦・,,。;;!!??]+)/);
+  if (m) {
+    out.merchant = m[1]
+      .replace(/\d{4}[\/\-.]\d{1,2}[\/\-.]\d{1,2}.*$/, '') // 去掉尾端跟著的日期
+      .trim();
+  }
+  return out;
+}
+
+function applyParsedBank(p) {
+  if (!p.amount || p.amount <= 0) return false;
+  addType = p.type;
+  setToggleValue('add-type-toggle', addType);
+  let cat = merchantCategory(p.merchant) || (p.merchant ? guessCategory(p.merchant, addType === 'income') : '其他');
+  if (!categories[addType].includes(cat)) cat = '其他';
+  addCategory = cat;
+  renderAddCats();
+  $('#add-amount').value = p.amount;
+  $('#add-date').value = p.date || todayStr();
+  $('#add-note').value = p.merchant || '';
+  toast('已自動填入,確認內容後按「儲存」', 3500);
+  return true;
+}
+
+$('#btn-paste-bank').addEventListener('click', async () => {
+  // 先試著直接讀剪貼簿(需要使用者同意);不行就開手動貼上視窗
+  let text = '';
+  try { text = await navigator.clipboard.readText(); } catch { /* 無權限或不支援 */ }
+  if (text && applyParsedBank(parseBankNotification(text))) return;
+  $('#paste-text').value = '';
+  $('#paste-overlay').classList.remove('hidden');
+});
+$('#paste-cancel').addEventListener('click', () => $('#paste-overlay').classList.add('hidden'));
+$('#paste-parse').addEventListener('click', () => {
+  const p = parseBankNotification($('#paste-text').value);
+  if (!p.amount || p.amount <= 0) { toast('找不到金額,請確認貼上的內容有包含金額'); return; }
+  $('#paste-overlay').classList.add('hidden');
+  applyParsedBank(p);
 });
 
 /* ================= 明細頁 ================= */

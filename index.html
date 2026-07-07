@@ -25,6 +25,7 @@
 
   <!-- ===== 記帳頁 ===== -->
   <section id="page-add" class="page active">
+    <button id="btn-paste-bank" class="settings-btn paste-bank">📋 貼上銀行通知,自動填入</button>
     <div class="type-toggle" id="add-type-toggle">
       <button class="type-btn expense active" data-type="expense">支出</button>
       <button class="type-btn income" data-type="income">收入</button>
@@ -167,6 +168,20 @@
       <div class="spacer"></div>
       <button id="edit-cancel" class="secondary-btn">取消</button>
       <button id="edit-save" class="primary-btn slim">儲存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 貼上銀行通知彈窗 -->
+<div id="paste-overlay" class="overlay hidden">
+  <div class="modal">
+    <h2 class="modal-title">貼上銀行通知</h2>
+    <div class="settings-info">把銀行的 LINE / 簡訊 / App 通知文字貼在下面,金額、日期、商店會自動辨識。</div>
+    <textarea id="paste-text" class="field-input paste-area" rows="6" placeholder="例如:&#10;【刷卡交易】約 NT$460 元&#10;卡末四碼 9058&#10;交易時間 2026/07/07 15:46&#10;商店名稱 藏壽司-八德興豐路店"></textarea>
+    <div class="modal-actions">
+      <button id="paste-cancel" class="secondary-btn">取消</button>
+      <div class="spacer"></div>
+      <button id="paste-parse" class="primary-btn slim">辨識並填入</button>
     </div>
   </div>
 </div>
