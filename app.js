@@ -1,5 +1,5 @@
 /* ================= 資料層 ================= */
-const APP_VERSION = 'v17';
+const APP_VERSION = 'v18';
 const STORE_ENTRIES = 'mt.entries';
 const STORE_CATS = 'mt.categories';
 
@@ -540,6 +540,13 @@ $('#btn-clear').addEventListener('click', async () => {
   const scope = cloudUser ? '(含雲端資料)' : '';
   if (!confirm(`確定要清除全部 ${entries.length} 筆紀錄嗎${scope}?此動作無法復原,建議先匯出備份。`)) return;
   await clearAllEntries();
+  if (cloudUser) {
+    try {
+      const epoch = Date.now();
+      await metaDoc().set({ epoch }, { merge: true });
+      localStorage.setItem('mt.epochSeen', String(epoch));
+    } catch (err) { console.error(err); }
+  }
   renderSettings();
   toast('已清除全部資料');
 });
@@ -1054,6 +1061,24 @@ async function runFullSync(label = '同步中…') {
   lastFullSyncAt = Date.now();
   setSyncStatus(label);
   try {
+    // 若雲端做過重置(清空重匯),且本機還沒跟上:本機資料已過時,直接以雲端為準
+    const metaSnap = await metaDoc().get({ source: 'server' }).catch(() => null);
+    const cloudEpoch = (metaSnap && metaSnap.exists && metaSnap.data().epoch) || 0;
+    const seenEpoch = Number(localStorage.getItem('mt.epochSeen') || 0);
+    if (cloudEpoch > seenEpoch) {
+      setSyncStatus('偵測到雲端已重置,正在下載最新資料…');
+      const cloudEntries = await fetchCloudEntries();
+      entries = cloudEntries;
+      saveEntries();
+      const md = metaSnap.data();
+      if (md.categories) { categories = md.categories; saveCats(); }
+      localStorage.setItem('mt.epochSeen', String(cloudEpoch));
+      cloudEntryCount = entries.length;
+      lastSyncAt = new Date();
+      refreshUI();
+      toast(`✅ 已依雲端最新狀態更新:${fmt(entries.length)} 筆`);
+      return { uploaded: 0, downloaded: entries.length, cloudSize: entries.length };
+    }
     const { missing, cloudSize, cloudEntries } = await computeMissing();
     const localIds = new Set(entries.map((e) => e.id));
     const localCount = new Map();
@@ -1218,7 +1243,10 @@ async function reconcileCloudToLocal() {
       await deleteCloudDocs(docsToDelete, (done) => setSyncStatus(`移除雲端舊資料… ${fmt(done)}/${fmt(docsToDelete.length)} 筆`));
     }
     await uploadEntries(entries, (done, total) => setSyncStatus(`上傳中… ${fmt(done)}/${fmt(total)} 筆`));
-    await metaDoc().set({ categories }, { merge: true });
+    // 蓋上「重置標記」:其他裝置看到後會自動以雲端為準,不會把自己的舊資料傳上來
+    const epoch = Date.now();
+    await metaDoc().set({ categories, epoch }, { merge: true });
+    localStorage.setItem('mt.epochSeen', String(epoch));
     localStorage.removeItem('mt.replaceCloud');
     cloudEntryCount = entries.length;
     lastSyncAt = new Date();
