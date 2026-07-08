@@ -1,5 +1,5 @@
 /* ================= 資料層 ================= */
-const APP_VERSION = 'v18';
+const APP_VERSION = 'v19';
 const STORE_ENTRIES = 'mt.entries';
 const STORE_CATS = 'mt.categories';
 
@@ -176,6 +176,86 @@ function applyParsedBank(p) {
   toast('已自動填入,確認內容後按「儲存」', 3500);
   return true;
 }
+
+/* ---- 截圖辨識(OCR,完全在裝置上執行,圖片不會上傳) ---- */
+let ocrWorkerPromise = null;
+let ocrProgressCb = null;
+
+function getOcrWorker() {
+  if (!ocrWorkerPromise) {
+    ocrWorkerPromise = (async () => {
+      if (typeof Tesseract === 'undefined') {
+        await new Promise((res, rej) => {
+          const s = document.createElement('script');
+          s.src = 'vendor/tesseract/tesseract.min.js';
+          s.onload = res;
+          s.onerror = () => rej(new Error('辨識引擎載入失敗,請確認網路'));
+          document.head.appendChild(s);
+        });
+      }
+      // Worker 內部無法解析相對路徑,必須用絕對網址
+      const base = new URL('vendor/tesseract', location.href).href;
+      return Tesseract.createWorker('chi_tra', 1, {
+        workerPath: base + '/worker.min.js',
+        corePath: base,
+        langPath: base,
+        logger: (m) => { if (ocrProgressCb) ocrProgressCb(m); },
+      });
+    })().catch((e) => { ocrWorkerPromise = null; throw e; });
+  }
+  return ocrWorkerPromise;
+}
+
+// 中文 OCR 常在字間多出空白,先併回去再解析
+function despaceCjk(s) {
+  return String(s).replace(/([一-鿿【】,。::])[ \t]+(?=[一-鿿【】,。::])/g, '$1');
+}
+
+async function handleOcrFile(file) {
+  if (!file) return;
+  const status = $('#paste-ocr-status');
+  status.classList.remove('hidden');
+  status.textContent = '載入辨識引擎…(第一次使用需下載約 9MB,之後離線可用)';
+  ocrProgressCb = (m) => {
+    if (m.status === 'recognizing text') status.textContent = `辨識中… ${Math.round((m.progress || 0) * 100)}%`;
+  };
+  try {
+    const worker = await getOcrWorker();
+    status.textContent = '辨識中… 0%';
+    const { data } = await worker.recognize(file);
+    const text = despaceCjk(data.text);
+    $('#paste-text').value = text;
+    status.classList.add('hidden');
+    const p = parseBankNotification(text);
+    if (p.amount && p.amount > 0) {
+      $('#paste-overlay').classList.add('hidden');
+      applyParsedBank(p);
+    } else {
+      toast('辨識完成,但找不到金額。請檢查下方文字,修正後按「辨識並填入」', 5000);
+    }
+  } catch (err) {
+    console.error(err);
+    status.classList.add('hidden');
+    toast('截圖辨識失敗:' + (err.message || err), 5000);
+  } finally {
+    ocrProgressCb = null;
+  }
+}
+
+$('#paste-pick-image').addEventListener('click', () => $('#paste-image-file').click());
+$('#paste-image-file').addEventListener('change', (e) => {
+  const f = e.target.files[0];
+  e.target.value = '';
+  handleOcrFile(f);
+});
+// 桌面版直接在視窗裡 Ctrl+V 貼截圖
+$('#paste-overlay').addEventListener('paste', (e) => {
+  const item = [...(e.clipboardData?.items || [])].find((i) => i.type.startsWith('image/'));
+  if (item) {
+    e.preventDefault();
+    handleOcrFile(item.getAsFile());
+  }
+});
 
 $('#btn-paste-bank').addEventListener('click', async () => {
   // 先試著直接讀剪貼簿(需要使用者同意);不行就開手動貼上視窗
